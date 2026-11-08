@@ -1,0 +1,6 @@
+{
+  "name": "Fifteen",
+  "description": "Fifteen: AI Speed Climbing Coach & Chrono Tracker – Smart timer, kinematic telemetry & split analysis, world-record ghost comparison, explosive routines, and cloud sync.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
