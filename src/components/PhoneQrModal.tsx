@@ -129,16 +129,14 @@ export const PhoneQrModal: React.FC<PhoneQrModalProps> = ({ onClose, lang }) => 
             </div>
 
             <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200/80 dark:border-slate-800 space-y-1">
-              <div className="flex items-center gap-1.5 font-bold text-slate-950 dark:text-white">
+              <div className="flex items-center gap-1.5 font-bold text-slate-900 dark:text-white">
                 <Smartphone className="w-4 h-4 text-amber-500" />
-                <span>2. Přidat na plochu (PWA)</span>
+                <span>2. Instalace na mobil & APK</span>
               </div>
               <p className="text-[11px] text-slate-500 leading-normal">
                 {lang === 'cs'
-                  ? 'V menu Safari/Chrome zvolte „Přidat na plochu“ pro celoobrazovkový režim bez lišt.'
-                  : lang === 'de'
-                  ? '„Zum Home-Bildschirm“ im Browser wählen für Vollbildmodus.'
-                  : 'Tap “Add to Home Screen” in Safari/Chrome for full-screen view.'}
+                  ? 'V Chrome klepněte na 3 tečky → „Nainstalovat aplikaci“ (funguje okamžitě jako nativní APK). Pro samostatný instalační soubor .apk vložte odkaz do pwabuilder.com.'
+                  : 'In Chrome tap 3 dots → “Install app” (acts like native APK). For standalone .apk file, use pwabuilder.com.'}
               </p>
             </div>
 

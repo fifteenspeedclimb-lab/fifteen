@@ -155,7 +155,7 @@ export const SplitAnalysis: React.FC<SplitAnalysisProps> = ({
         <span className="text-xs font-bold text-slate-600 dark:text-slate-400">
           Porovnat se světovým rekordem:
         </span>
-        <div className="flex items-center gap-1.5 overflow-x-auto w-full sm:w-auto pb-1 sm:pb-0">
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar w-full sm:w-auto pb-1 sm:pb-0">
           {WORLD_RECORDS.map((wr) => (
             <button
               key={wr.id}
@@ -288,18 +288,23 @@ export const SplitAnalysis: React.FC<SplitAnalysisProps> = ({
               <RotateCcw className="w-4 h-4" />
             </button>
 
-            <input
-              type="range"
-              min="0"
-              max={maxDuration}
-              step="0.01"
-              value={currentPlaybackTime}
-              onChange={(e) => {
-                setCurrentPlaybackTime(parseFloat(e.target.value));
+            {/* Clickable Timeline Track instead of slider */}
+            <div
+              onClick={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                const clickX = e.clientX - rect.left;
+                const ratio = Math.max(0, Math.min(1, clickX / rect.width));
+                setCurrentPlaybackTime(ratio * maxDuration);
                 setIsPlaying(false);
               }}
-              className="flex-1 accent-red-600 cursor-pointer"
-            />
+              className="flex-1 h-3 bg-slate-900 rounded-full overflow-hidden border border-slate-800 cursor-pointer relative"
+              title="Klepněte pro skok v čase"
+            >
+              <div
+                className="h-full bg-red-600 rounded-full transition-all duration-75"
+                style={{ width: `${Math.min(100, (currentPlaybackTime / maxDuration) * 100)}%` }}
+              />
+            </div>
 
             <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-xl border border-slate-800">
               {[0.25, 0.5, 1.0].map((spd) => (

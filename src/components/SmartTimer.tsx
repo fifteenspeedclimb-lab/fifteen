@@ -1,15 +1,32 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import confetti from 'canvas-confetti';
-import { Camera, Play, Square, RotateCcw, AlertTriangle, CheckCircle2, Sparkles, Sliders, ShieldCheck, Layers, Video } from 'lucide-react';
+import {
+  Camera,
+  Play,
+  Square,
+  RotateCcw,
+  AlertTriangle,
+  CheckCircle2,
+  Sparkles,
+  Radio,
+  Mic,
+  Video,
+  Download,
+  Trash2,
+  RefreshCw,
+  X,
+  Volume2
+} from 'lucide-react';
 import {
   playIFSCPrepTone,
   playIFSCStartTone,
   playSplitChime,
   playFinishFanfare,
   playFalseStartAlarm,
+  getStoredAudioSettings,
 } from '../utils/audio';
 import { RouteCategory, SpeedRun } from '../types/climbing';
-import { saveRun, getUserProfile } from '../utils/storage';
+import { saveRun, getUserProfile, updateRunVideo, removeRunVideo } from '../utils/storage';
 import { ROUTE_DEFINITIONS } from '../data/speedWallData';
 import { Language, TRANSLATIONS } from '../utils/i18n';
 
@@ -22,6 +39,7 @@ interface SmartTimerProps {
 }
 
 type StartMode = 'ifsc_countdown' | 'camera_motion' | 'sound_trigger' | 'manual';
+type CountdownState = 'idle' | 'marks' | 'ready' | 'beeps' | 'armed' | 'started';
 
 export const SmartTimer: React.FC<SmartTimerProps> = ({
   onRunFinished,
@@ -37,7 +55,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   // Timer states
   const [isRunning, setIsRunning] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
-  const [countdownState, setCountdownState] = useState<'idle' | 'marks' | 'ready' | 'beeps' | 'started'>('idle');
+  const [countdownState, setCountdownState] = useState<CountdownState>('idle');
   const [startMode, setStartMode] = useState<StartMode>('ifsc_countdown');
 
   // Splits & Reaction
@@ -47,33 +65,98 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const [isFalseStart, setIsFalseStart] = useState<boolean>(false);
   const [finishedRun, setFinishedRun] = useState<SpeedRun | null>(null);
 
-  // Camera & Motion Detection
-  const [cameraActive, setCameraActive] = useState(false);
+  // Active Camera & Video Recording
+  const [cameraActive, setCameraActive] = useState<boolean>(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
-  const [motionSensitivity, setMotionSensitivity] = useState<number>(35);
-  const [motionLevel, setMotionLevel] = useState<number>(0);
-  const [autoFinishArmed, setAutoFinishArmed] = useState<boolean>(true);
+  const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
   const [recordVideoOnRun, setRecordVideoOnRun] = useState<boolean>(true);
+  const [isRecording, setIsRecording] = useState<boolean>(false);
+  const [recordedVideoUrl, setRecordedVideoUrl] = useState<string | null>(null);
+  const [videoPlaybackRate, setVideoPlaybackRate] = useState<number>(1.0);
+  const [showDeleteVideoConfirm, setShowDeleteVideoConfirm] = useState<boolean>(false);
+
+  // Discrete Calibrated Target Zones (Percentages)
+  const [wallPreset, setWallPreset] = useState<'standard_15m' | 'compact_10m'>('standard_15m');
+  const [sensitivityPreset, setSensitivityPreset] = useState<'low' | 'medium' | 'high'>('medium');
+  const startZoneY = wallPreset === 'standard_15m' ? 78 : 68;
+  const finishZoneY = wallPreset === 'standard_15m' ? 6 : 14;
 
   // Mic & Sound Trigger
   const [micActive, setMicActive] = useState(false);
-  const [soundLevel, setSoundLevel] = useState<number>(0);
-  const [soundThreshold, setSoundThreshold] = useState<number>(65);
+  const [micError, setMicError] = useState<string | null>(null);
 
-  // Settings & Venue
-  const [showSettings, setShowSettings] = useState(false);
-  const [selectedBeta, setSelectedBeta] = useState<'standard' | 'tomoa-skip' | 'modern-dyno' | 'youth-flow'>('tomoa-skip');
-  const [gymName, setGymName] = useState<string>(profile.homeGym || 'Big Wall Praha');
+  // Venue & Beta
+  const [selectedBeta] = useState<'tomoa-skip' | 'standard'>('tomoa-skip');
+  const [gymName] = useState<string>(profile.homeGym || 'Big Wall Praha');
 
-  // High-precision refs
+  // Precision refs
   const startTimeRef = useRef<number>(0);
   const rafRef = useRef<number | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const playbackVideoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const prevImageDataRef = useRef<Uint8ClampedArray | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const micAnalyserRef = useRef<AnalyserNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
+
+  // MediaRecorder refs
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+
+  // Sensitivity mapped values
+  const motionThreshold = sensitivityPreset === 'low' ? 50 : sensitivityPreset === 'high' ? 25 : 35;
+  const soundThreshold = sensitivityPreset === 'low' ? 75 : sensitivityPreset === 'high' ? 55 : 65;
+
+  // Start MediaRecorder
+  const startMediaRecording = useCallback(() => {
+    if (!mediaStreamRef.current || !recordVideoOnRun) return;
+    try {
+      recordedChunksRef.current = [];
+      const mimeTypes = [
+        'video/webm;codecs=vp9',
+        'video/webm',
+        'video/mp4;codecs=avc1',
+        'video/mp4',
+      ];
+      const mimeType = mimeTypes.find((type) => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(type)) || '';
+
+      const recorder = mimeType ? new MediaRecorder(mediaStreamRef.current, { mimeType }) : new MediaRecorder(mediaStreamRef.current);
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          recordedChunksRef.current.push(e.data);
+        }
+      };
+      recorder.onstop = () => {
+        const blob = new Blob(recordedChunksRef.current, { type: recorder.mimeType || 'video/webm' });
+        const videoUrl = URL.createObjectURL(blob);
+        setRecordedVideoUrl(videoUrl);
+        setFinishedRun((prev) => {
+          if (!prev) return null;
+          updateRunVideo(prev.id, videoUrl);
+          return { ...prev, videoUrl };
+        });
+      };
+      recorder.start(100);
+      mediaRecorderRef.current = recorder;
+      setIsRecording(true);
+    } catch {
+      setIsRecording(false);
+    }
+  }, [recordVideoOnRun]);
+
+  // Stop MediaRecorder
+  const stopMediaRecording = useCallback(() => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {
+        // ignore
+      }
+    }
+    setIsRecording(false);
+  }, []);
 
   // RAF Timer loop
   const updateTimer = useCallback(() => {
@@ -90,7 +173,11 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     const finalMs = performance.now() - startTimeRef.current;
     startTimeRef.current = 0;
     setIsRunning(false);
+    setCountdownState('idle');
     playFinishFanfare();
+
+    // Stop video recording
+    stopMediaRecording();
 
     const totalSeconds = parseFloat((finalMs / 1000).toFixed(3));
     const s1 = split1Time ?? parseFloat((totalSeconds * 0.31).toFixed(2));
@@ -113,6 +200,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       gym: gymName,
       climberName: profile.name,
       gender: profile.gender,
+      videoUrl: recordedVideoUrl || undefined,
       cloudSyncStatus: 'synced_gdrive',
       isPersonalBest: totalSeconds < profile.personalBest,
     };
@@ -124,8 +212,8 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     if (totalSeconds < profile.personalBest && !isFalseStart) {
       try {
         confetti({
-          particleCount: 90,
-          spread: 75,
+          particleCount: 80,
+          spread: 70,
           origin: { y: 0.6 },
           colors: ['#ef4444', '#f59e0b', '#3b82f6', '#10b981'],
         });
@@ -133,7 +221,19 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         // ignore
       }
     }
-  }, [split1Time, split2Time, reactionTime, isFalseStart, selectedBeta, currentCategory, gymName, profile, onRunFinished]);
+  }, [
+    split1Time,
+    split2Time,
+    reactionTime,
+    isFalseStart,
+    selectedBeta,
+    currentCategory,
+    gymName,
+    profile,
+    recordedVideoUrl,
+    onRunFinished,
+    stopMediaRecording,
+  ]);
 
   // Start Timer Execution
   const startTimerNow = useCallback((measuredReaction: number = 0.135) => {
@@ -150,29 +250,35 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     setSplit1Time(null);
     setSplit2Time(null);
     setFinishedRun(null);
+    setShowDeleteVideoConfirm(false);
     setIsRunning(true);
     setCountdownState('started');
 
+    // Start video recording if camera stream is active
+    startMediaRecording();
+
     startTimeRef.current = performance.now();
     rafRef.current = requestAnimationFrame(updateTimer);
-  }, [updateTimer]);
+  }, [updateTimer, startMediaRecording]);
 
   // Official IFSC Countdown Sequence
   const triggerIFSCCountdown = useCallback(() => {
     if (isRunning) return;
+    const audioConf = getStoredAudioSettings();
     setCountdownState('marks');
     setElapsedMs(0);
     setFinishedRun(null);
+    setShowDeleteVideoConfirm(false);
 
     setTimeout(() => {
       setCountdownState('ready');
-      setTimeout(() => playIFSCPrepTone(), 700);
-      setTimeout(() => playIFSCPrepTone(), 1700);
-      setTimeout(() => playIFSCPrepTone(), 2700);
+      setTimeout(() => playIFSCPrepTone(audioConf.toneStyle), 700);
+      setTimeout(() => playIFSCPrepTone(audioConf.toneStyle), 1700);
+      setTimeout(() => playIFSCPrepTone(audioConf.toneStyle), 2700);
 
       const randomHold = 3700 + Math.random() * 200;
       setTimeout(() => {
-        playIFSCStartTone();
+        playIFSCStartTone(audioConf.toneStyle);
         const reaction = 0.115 + Math.random() * 0.045;
         startTimerNow(reaction);
       }, randomHold);
@@ -188,7 +294,23 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     setSplit2Time(null);
     setCountdownState('idle');
     setIsFalseStart(false);
+    setShowDeleteVideoConfirm(false);
+    stopMediaRecording();
   };
+
+  const handleDeleteVideo = useCallback(() => {
+    if (!finishedRun?.videoUrl) return;
+    try {
+      URL.revokeObjectURL(finishedRun.videoUrl);
+    } catch {
+      // ignore
+    }
+    removeRunVideo(finishedRun.id);
+    setRecordedVideoUrl(null);
+    recordedChunksRef.current = [];
+    setFinishedRun((prev) => (prev ? { ...prev, videoUrl: undefined } : null));
+    setShowDeleteVideoConfirm(false);
+  }, [finishedRun]);
 
   const recordSplit = (gate: 1 | 2) => {
     if (!isRunning) return;
@@ -201,44 +323,81 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     }
   };
 
-  const toggleCamera = async () => {
-    if (cameraActive) {
-      if (mediaStreamRef.current) {
-        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
-      }
-      setCameraActive(false);
-      return;
+  // Safe camera toggle with facingMode
+  const startCameraStream = async (targetFacing: 'environment' | 'user') => {
+    setCameraError(null);
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
     }
 
     try {
-      setCameraError(null);
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } },
-        audio: false,
-      });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: targetFacing }, width: { ideal: 640 }, height: { ideal: 480 } },
+          audio: false,
+        });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      }
+
       mediaStreamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.play();
+        videoRef.current.play().catch(() => {});
       }
       setCameraActive(true);
+      setFacingMode(targetFacing);
     } catch {
-      setCameraError('Kamera není dostupná nebo byla zamítnuta.');
+      setCameraError('Kamera není dostupná nebo byl zamítnut přístup.');
       setCameraActive(false);
     }
   };
 
+  const toggleCamera = async () => {
+    if (cameraActive) {
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current = null;
+      }
+      setCameraActive(false);
+      return;
+    }
+    await startCameraStream(facingMode);
+  };
+
+  const switchCameraFacing = async () => {
+    const nextFacing = facingMode === 'environment' ? 'user' : 'environment';
+    await startCameraStream(nextFacing);
+  };
+
+  // Safe microphone toggle
   const toggleMic = async () => {
     if (micActive) {
-      if (audioContextRef.current) audioContextRef.current.close();
+      if (audioContextRef.current) {
+        audioContextRef.current.close().catch(() => {});
+        audioContextRef.current = null;
+      }
+      if (micStreamRef.current) {
+        micStreamRef.current.getTracks().forEach((track) => track.stop());
+        micStreamRef.current = null;
+      }
       setMicActive(false);
       return;
     }
 
+    setMicError(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      micStreamRef.current = stream;
+
       const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       const ctx = new AudioCtx();
+      if (ctx.state === 'suspended') {
+        await ctx.resume();
+      }
+
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 256;
       const source = ctx.createMediaStreamSource(stream);
@@ -248,71 +407,97 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       micAnalyserRef.current = analyser;
       setMicActive(true);
     } catch {
+      setMicError('Mikrofon není dostupný nebo byl zamítnut.');
       setMicActive(false);
     }
   };
 
+  // Arm/Disarm Camera Motion or Sound Trigger
+  const handleArmSensorStart = async () => {
+    if (countdownState === 'armed') {
+      setCountdownState('idle');
+      return;
+    }
+
+    if (startMode === 'camera_motion' && !cameraActive) {
+      await startCameraStream(facingMode);
+    }
+    if (startMode === 'sound_trigger' && !micActive) {
+      await toggleMic();
+    }
+
+    setElapsedMs(0);
+    setFinishedRun(null);
+    setIsFalseStart(false);
+    setCountdownState('armed');
+  };
+
+  // Main input loop: Motion detection & Sound trigger
   useEffect(() => {
     let intervalId: NodeJS.Timeout;
 
     const checkInputs = () => {
-      if (micActive && micAnalyserRef.current && !isRunning && countdownState === 'idle') {
+      // 1. Mic Trigger
+      if (micActive && micAnalyserRef.current && !isRunning) {
         const dataArray = new Uint8Array(micAnalyserRef.current.frequencyBinCount);
         micAnalyserRef.current.getByteFrequencyData(dataArray);
         let sum = 0;
         for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
         const avg = sum / dataArray.length;
-        setSoundLevel(Math.round(avg));
 
-        if (startMode === 'sound_trigger' && avg > soundThreshold) {
+        if (startMode === 'sound_trigger' && countdownState === 'armed' && avg > soundThreshold) {
           playIFSCStartTone();
-          startTimerNow(0.12);
+          startTimerNow(0.125);
         }
       }
 
+      // 2. Camera Motion
       if (cameraActive && videoRef.current && canvasRef.current) {
         const video = videoRef.current;
         const canvas = canvasRef.current;
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
         if (ctx && video.readyState >= 2) {
-          canvas.width = 160;
-          canvas.height = 120;
-          ctx.drawImage(video, 0, 0, 160, 120);
+          const W = 160;
+          const H = 120;
+          canvas.width = W;
+          canvas.height = H;
+          ctx.drawImage(video, 0, 0, W, H);
 
           try {
-            const frame = ctx.getImageData(0, 0, 160, 120);
+            const frame = ctx.getImageData(0, 0, W, H);
             const data = frame.data;
 
             if (prevImageDataRef.current) {
               const prevData = prevImageDataRef.current;
-              let diffCount = 0;
-              let topGateDiff = 0;
-              let bottomGateDiff = 0;
+              let startDiff = 0;
+              let finishDiff = 0;
+
+              const startYMin = Math.floor((startZoneY / 100) * H);
+              const finishYMax = Math.floor(((finishZoneY + 18) / 100) * H);
 
               for (let i = 0; i < data.length; i += 8) {
                 const diff = Math.abs(data[i] - prevData[i]) + Math.abs(data[i + 1] - prevData[i + 1]);
-                if (diff > 50) {
-                  diffCount++;
+                if (diff > 45) {
                   const pixelIndex = i / 4;
-                  const y = Math.floor(pixelIndex / 160);
-                  if (y < 25) topGateDiff++;
-                  if (y > 90) bottomGateDiff++;
+                  const y = Math.floor(pixelIndex / W);
+
+                  if (y <= finishYMax) finishDiff++;
+                  if (y >= startYMin) startDiff++;
                 }
               }
 
-              const normalizedMotion = Math.min(100, Math.round((diffCount / (data.length / 32)) * 100));
-              setMotionLevel(normalizedMotion);
-
-              if (startMode === 'camera_motion' && !isRunning && countdownState === 'idle') {
-                if (bottomGateDiff > motionSensitivity * 1.5 || normalizedMotion > motionSensitivity) {
+              // Auto-Start on foot release
+              if (startMode === 'camera_motion' && !isRunning && countdownState === 'armed') {
+                if (startDiff > motionThreshold * 1.2) {
                   playIFSCStartTone();
-                  startTimerNow(0.135);
+                  startTimerNow(0.138);
                 }
               }
 
-              if (isRunning && autoFinishArmed && elapsedMs > 2200) {
-                if (topGateDiff > motionSensitivity * 2 || (normalizedMotion > motionSensitivity * 1.8 && elapsedMs > 3000)) {
+              // Auto-Finish on top touch pad slap
+              if (isRunning && elapsedMs > 2400) {
+                if (finishDiff > motionThreshold * 1.5) {
                   stopTimer();
                 }
               }
@@ -326,18 +511,36 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       }
     };
 
-    intervalId = setInterval(checkInputs, 60);
+    intervalId = setInterval(checkInputs, 50);
     return () => clearInterval(intervalId);
-  }, [micActive, cameraActive, isRunning, countdownState, startMode, soundThreshold, motionSensitivity, autoFinishArmed, elapsedMs, startTimerNow, stopTimer]);
+  }, [
+    micActive,
+    cameraActive,
+    isRunning,
+    countdownState,
+    startMode,
+    soundThreshold,
+    motionThreshold,
+    elapsedMs,
+    startZoneY,
+    finishZoneY,
+    startTimerNow,
+    stopTimer,
+  ]);
 
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      if (mediaStreamRef.current) {
-        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
-      }
-      if (audioContextRef.current) {
-        audioContextRef.current.close();
+      if (mediaStreamRef.current) mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+      if (micStreamRef.current) micStreamRef.current.getTracks().forEach((t) => t.stop());
+      if (audioContextRef.current) audioContextRef.current.close().catch(() => {});
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        try {
+          mediaRecorderRef.current.stop();
+        } catch {
+          // ignore
+        }
       }
     };
   }, []);
@@ -357,424 +560,474 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     return `${padSec}.${padFrac}`;
   };
 
-  return (
-    <div className="max-w-4xl mx-auto px-3 sm:px-6 py-4 space-y-4 sm:space-y-6">
-      {/* Route Division Picker & Venue Subheader */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-2 border-b border-slate-200 dark:border-slate-800">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="font-display font-black text-2xl sm:text-3xl text-slate-950 dark:text-white tracking-tight">
-              {t.timerTitle}
-            </h1>
-            <span className="px-2.5 py-0.5 rounded-lg text-xs font-black bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300">
-              {routeDef.heightMeters.toFixed(0)}m stěna
-            </span>
-          </div>
+  const handlePlaybackSpeedChange = (spd: number) => {
+    setVideoPlaybackRate(spd);
+    if (playbackVideoRef.current) {
+      playbackVideoRef.current.playbackRate = spd;
+    }
+  };
 
-          {/* Quick Route Switcher Bar */}
-          <div className="flex items-center gap-1.5 mt-1.5">
-            <span className="text-[11px] font-bold text-slate-500">{t.categorySelect}:</span>
-            <div className="flex items-center gap-1 p-0.5 bg-slate-100 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 text-[11px] font-bold">
-              <button
-                onClick={() => onSelectCategory('adults_15m')}
-                className={`px-2.5 py-1 rounded-lg transition-colors ${
-                  currentCategory === 'adults_15m'
-                    ? 'bg-red-600 text-white shadow-sm'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                {t.categoryAdults}
-              </button>
-              <button
-                onClick={() => onSelectCategory('youth_u15')}
-                className={`px-2.5 py-1 rounded-lg transition-colors ${
-                  currentCategory === 'youth_u15'
-                    ? 'bg-red-600 text-white shadow-sm'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                {t.categoryU15}
-              </button>
-              <button
-                onClick={() => onSelectCategory('youth_u13')}
-                className={`px-2.5 py-1 rounded-lg transition-colors ${
-                  currentCategory === 'youth_u13'
-                    ? 'bg-red-600 text-white shadow-sm'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                {t.categoryU13}
-              </button>
-            </div>
-          </div>
+  return (
+    <div className="max-w-3xl mx-auto px-3 sm:px-6 py-3 sm:py-5 space-y-3 sm:space-y-4 w-full max-w-full overflow-x-hidden">
+      {/* Category Picker and Mode Selector */}
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2">
+        <div className="grid grid-cols-3 gap-1 p-1 bg-slate-200/80 dark:bg-slate-900 rounded-2xl text-xs font-bold">
+          <button
+            onClick={() => onSelectCategory('adults_15m')}
+            className={`min-h-[42px] px-3 py-1.5 rounded-xl transition-all ${
+              currentCategory === 'adults_15m'
+                ? 'bg-red-600 text-white shadow-sm'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            15m Dospělí
+          </button>
+          <button
+            onClick={() => onSelectCategory('youth_u15')}
+            className={`min-h-[42px] px-3 py-1.5 rounded-xl transition-all ${
+              currentCategory === 'youth_u15'
+                ? 'bg-red-600 text-white shadow-sm'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            10m U15
+          </button>
+          <button
+            onClick={() => onSelectCategory('youth_u13')}
+            className={`min-h-[42px] px-3 py-1.5 rounded-xl transition-all ${
+              currentCategory === 'youth_u13'
+                ? 'bg-red-600 text-white shadow-sm'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            10m U13
+          </button>
         </div>
 
-        {/* Start Mode Selector */}
-        <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 w-full sm:w-auto overflow-x-auto">
-          <button
-            onClick={() => setStartMode('ifsc_countdown')}
-            className={`min-h-[40px] px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap shrink-0 ${
-              startMode === 'ifsc_countdown'
-                ? 'bg-white dark:bg-slate-800 text-slate-950 dark:text-white shadow-sm'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
-            }`}
-          >
-            {t.startBeeps}
-          </button>
-          <button
-            onClick={() => {
-              setStartMode('camera_motion');
-              if (!cameraActive) toggleCamera();
-            }}
-            className={`min-h-[40px] px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap shrink-0 ${
-              startMode === 'camera_motion'
-                ? 'bg-white dark:bg-slate-800 text-slate-950 dark:text-white shadow-sm'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
-            }`}
-          >
-            {t.startCamera}
-          </button>
-          <button
-            onClick={() => {
-              setStartMode('sound_trigger');
-              if (!micActive) toggleMic();
-            }}
-            className={`min-h-[40px] px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap shrink-0 ${
-              startMode === 'sound_trigger'
-                ? 'bg-white dark:bg-slate-800 text-slate-950 dark:text-white shadow-sm'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
-            }`}
-          >
-            {t.startSound}
-          </button>
-          <button
-            onClick={() => setStartMode('manual')}
-            className={`min-h-[40px] px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap shrink-0 ${
-              startMode === 'manual'
-                ? 'bg-white dark:bg-slate-800 text-slate-950 dark:text-white shadow-sm'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
-            }`}
-          >
-            {t.startManual}
-          </button>
+        {/* Start Mode Icons Grid */}
+        <div className="grid grid-cols-4 gap-1 p-1 bg-slate-200/80 dark:bg-slate-900 rounded-2xl text-xs font-bold">
+          {[
+            { id: 'ifsc_countdown' as StartMode, label: 'Pípnutí' },
+            { id: 'camera_motion' as StartMode, label: 'Kamera' },
+            { id: 'sound_trigger' as StartMode, label: 'Zvuk' },
+            { id: 'manual' as StartMode, label: 'Ruční' },
+          ].map((m) => (
+            <button
+              key={m.id}
+              onClick={() => {
+                setStartMode(m.id);
+                setCountdownState('idle');
+                if (m.id === 'camera_motion' && !cameraActive) startCameraStream(facingMode);
+                if (m.id === 'sound_trigger' && !micActive) toggleMic();
+              }}
+              className={`min-h-[42px] px-2 py-1.5 rounded-xl transition-all ${
+                startMode === m.id
+                  ? 'bg-white dark:bg-slate-800 text-slate-950 dark:text-white shadow-sm'
+                  : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              {m.label}
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* Main High-Legibility Chronometer Display */}
-      <div className="relative overflow-hidden rounded-3xl bg-slate-950 text-white p-5 sm:p-10 shadow-2xl border border-slate-800 text-center select-none">
-        {isRunning && (
-          <div className="absolute inset-0 bg-red-600/10 dark:bg-red-500/10 animate-pulse pointer-events-none" />
-        )}
+      {/* Camera Live Toggle & Recording Control Bar */}
+      <div className="flex items-center justify-between p-2 sm:p-2.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs">
+        <button
+          onClick={toggleCamera}
+          className={`min-h-[40px] px-3.5 py-1.5 rounded-xl font-bold transition-all flex items-center gap-2 ${
+            cameraActive
+              ? 'bg-red-600 text-white shadow-sm'
+              : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+          }`}
+        >
+          <Camera className="w-4 h-4" />
+          <span>{cameraActive ? 'Kamera aktivní' : 'Aktivovat kameru'}</span>
+        </button>
 
-        {isFalseStart && (
-          <div className="mb-3 inline-flex items-center gap-2 px-4 py-1.5 bg-red-600 text-white font-extrabold text-xs uppercase tracking-wider rounded-full shadow-lg animate-bounce">
-            <AlertTriangle className="w-4 h-4" />
-            <span>{t.falseStart} ({reactionTime.toFixed(3)}s)</span>
-          </div>
-        )}
-
-        {countdownState !== 'idle' && countdownState !== 'started' && (
-          <div className="mb-3 inline-flex items-center gap-2 px-4 py-1.5 bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold text-xs uppercase tracking-widest rounded-full">
-            <span>
-              {countdownState === 'marks' && t.readyMarks}
-              {countdownState === 'ready' && t.readySet}
-              {countdownState === 'beeps' && t.readyBeeps}
-            </span>
-          </div>
-        )}
-
-        <div className="my-2 sm:my-4">
-          <span className="font-mono tabular-nums text-6xl sm:text-8xl md:text-9xl font-black tracking-tight text-white drop-shadow-[0_4px_30px_rgba(239,68,68,0.35)]">
-            {formatChrono(elapsedMs)}
-          </span>
-          <span className="block text-[11px] sm:text-xs uppercase tracking-widest text-slate-400 mt-2 font-mono">
-            {isRunning ? t.timerActive : `${routeDef.heightMeters.toFixed(0)}M SPEED CHRONO`}
-          </span>
-        </div>
-
-        {/* 3 Quick Split Buttons */}
-        <div className="grid grid-cols-3 gap-2 sm:gap-4 max-w-lg mx-auto my-5 text-left">
-          <button
-            onClick={() => recordSplit(1)}
-            disabled={!isRunning || split1Time !== null}
-            className={`min-h-[56px] p-3 rounded-2xl border transition-all flex flex-col justify-center ${
-              split1Time
-                ? 'bg-emerald-950/50 border-emerald-500/70 text-emerald-300'
-                : isRunning
-                ? 'bg-slate-900 border-slate-700 hover:border-red-500 active:scale-95 text-slate-200'
-                : 'bg-slate-900/40 border-slate-800/80 text-slate-500'
-            }`}
-          >
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-              {t.gate1} ({currentCategory === 'adults_15m' ? '5m' : '3.3m'})
-            </span>
-            <span className="text-base sm:text-lg font-mono font-bold tabular-nums">
-              {split1Time ? `${split1Time.toFixed(2)}s` : isRunning ? t.tapToRecord : '—'}
-            </span>
-          </button>
-
-          <button
-            onClick={() => recordSplit(2)}
-            disabled={!isRunning || split2Time !== null}
-            className={`min-h-[56px] p-3 rounded-2xl border transition-all flex flex-col justify-center ${
-              split2Time
-                ? 'bg-emerald-950/50 border-emerald-500/70 text-emerald-300'
-                : isRunning && split1Time
-                ? 'bg-slate-900 border-slate-700 hover:border-red-500 active:scale-95 text-slate-200'
-                : 'bg-slate-900/40 border-slate-800/80 text-slate-500'
-            }`}
-          >
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-              {t.gate2} ({currentCategory === 'adults_15m' ? '10m' : '6.6m'})
-            </span>
-            <span className="text-base sm:text-lg font-mono font-bold tabular-nums">
-              {split2Time ? `${split2Time.toFixed(2)}s` : isRunning ? t.tapToRecord : '—'}
-            </span>
-          </button>
-
-          <button
-            onClick={isRunning ? stopTimer : undefined}
-            disabled={!isRunning}
-            className={`min-h-[56px] p-3 rounded-2xl border transition-all flex flex-col justify-center ${
-              isRunning
-                ? 'bg-red-600/30 border-red-500 hover:bg-red-600/50 active:scale-95 text-red-200 animate-pulse'
-                : 'bg-slate-900/40 border-slate-800/80 text-slate-500'
-            }`}
-          >
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-              {t.finishPad} ({routeDef.heightMeters.toFixed(0)}m)
-            </span>
-            <span className="text-base sm:text-lg font-mono font-bold tabular-nums">
-              {isRunning ? 'DOHMAT!' : 'Konec'}
-            </span>
-          </button>
-        </div>
-
-        {/* Primary Action Buttons */}
-        <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
-          {!isRunning ? (
+        {cameraActive && (
+          <div className="flex items-center gap-2">
             <button
-              onClick={startMode === 'ifsc_countdown' ? triggerIFSCCountdown : () => startTimerNow(0.138)}
-              disabled={countdownState !== 'idle' && countdownState !== 'started'}
-              className="w-full sm:w-auto min-h-[58px] sm:min-w-[240px] px-8 py-4 bg-red-600 hover:bg-red-500 active:scale-98 text-white font-black text-lg rounded-2xl shadow-xl shadow-red-600/25 transition-all flex items-center justify-center gap-3 disabled:opacity-50"
+              onClick={() => setRecordVideoOnRun(!recordVideoOnRun)}
+              className={`min-h-[38px] px-3 py-1 rounded-xl font-bold transition-all flex items-center gap-1.5 border ${
+                recordVideoOnRun
+                  ? 'bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 border-red-300 dark:border-red-900'
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-400 border-transparent'
+              }`}
             >
-              <Play className="w-6 h-6 fill-current" />
-              <span>{startMode === 'ifsc_countdown' ? t.startBeeps : t.btnStart}</span>
+              <Video className="w-3.5 h-3.5" />
+              <span>{recordVideoOnRun ? 'Záznam: ZAP' : 'Záznam: VYP'}</span>
+            </button>
+
+            <button
+              onClick={switchCameraFacing}
+              title="Otočit kameru (Přední / Zadní)"
+              className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 flex items-center justify-center hover:bg-slate-200 transition-colors"
+            >
+              <RefreshCw className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+      </div>
+
+      {cameraError && (
+        <p className="text-xs text-amber-600 bg-amber-50 dark:bg-amber-950/30 p-2.5 rounded-2xl border border-amber-200 dark:border-amber-900">
+          {cameraError}
+        </p>
+      )}
+
+      {/* Main Screen: Active Camera Viewport OR Clean Athletic Digital Card */}
+      {cameraActive ? (
+        /* ACTIVE CAMERA HUD VIEWPORT */
+        <div className="relative rounded-3xl bg-black border-2 border-slate-800 shadow-2xl overflow-hidden aspect-[4/3] sm:aspect-video flex items-center justify-center select-none">
+          <video
+            ref={videoRef}
+            playsInline
+            muted
+            autoPlay
+            className="w-full h-full object-cover"
+          />
+          <canvas ref={canvasRef} className="hidden" />
+
+          {/* Top Camera Status Bar */}
+          <div className="absolute top-3 left-3 right-3 flex items-center justify-between z-10 pointer-events-none">
+            {isRecording ? (
+              <div className="px-3 py-1 rounded-full bg-red-600 text-white font-mono font-black text-xs uppercase tracking-wider flex items-center gap-1.5 shadow-lg animate-pulse">
+                <span className="w-2.5 h-2.5 rounded-full bg-white animate-ping" />
+                <span>REC</span>
+                <span>{(elapsedMs / 1000).toFixed(1)}s</span>
+              </div>
+            ) : (
+              <div className="px-2.5 py-0.5 rounded-full bg-black/60 backdrop-blur-md text-white font-mono text-[11px] font-bold border border-white/20">
+                LIVE KAMERA
+              </div>
+            )}
+
+            {isFalseStart && (
+              <div className="px-3 py-1 bg-red-600 text-white font-black text-xs uppercase rounded-full shadow-lg animate-bounce">
+                ULILÝ START!
+              </div>
+            )}
+          </div>
+
+          {/* Calibration Overlay Lines for Start & Finish */}
+          <div
+            style={{ top: `${finishZoneY}%`, height: '16%' }}
+            className="absolute left-3 right-3 border-2 border-dashed border-red-500/80 bg-red-500/10 rounded-xl flex items-center justify-center text-[10px] font-bold text-red-200 uppercase pointer-events-none"
+          >
+            🔴 Cíl (Dohmat 15m)
+          </div>
+
+          <div
+            style={{ top: `${startZoneY}%`, height: '16%' }}
+            className="absolute left-3 right-3 border-2 border-dashed border-emerald-400/80 bg-emerald-500/10 rounded-xl flex items-center justify-center text-[10px] font-bold text-emerald-200 uppercase pointer-events-none"
+          >
+            🟢 Startovní podložka (Noha)
+          </div>
+
+          {/* Giant Chrono HUD Overlay */}
+          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none p-4">
+            {countdownState === 'armed' && (
+              <div className="mb-2 px-3.5 py-1 bg-emerald-500/80 text-white font-black text-xs uppercase tracking-wider rounded-full shadow-lg animate-pulse">
+                ČEKÁ SE NA ODRAZ Z PODLOŽKY
+              </div>
+            )}
+
+            {countdownState !== 'idle' && countdownState !== 'started' && countdownState !== 'armed' && (
+              <div className="mb-2 px-4 py-1 bg-amber-500 text-slate-950 font-black text-xs uppercase tracking-widest rounded-full shadow-lg">
+                {countdownState === 'marks' && 'NA MÍSTA'}
+                {countdownState === 'ready' && 'PŘIPRAVIT SE'}
+                {countdownState === 'beeps' && 'ODPOČET...'}
+              </div>
+            )}
+
+            <div className="font-mono tabular-nums text-6xl sm:text-8xl md:text-9xl font-black text-white drop-shadow-[0_4px_30px_rgba(0,0,0,0.9)] tracking-tight">
+              {formatChrono(elapsedMs)}
+            </div>
+          </div>
+        </div>
+      ) : (
+        /* SLEEK DIGITAL CHRONO CARD */
+        <div className="relative rounded-3xl bg-slate-950 text-white p-4 sm:p-8 border border-slate-800 shadow-2xl text-center select-none overflow-hidden">
+          {/* False Start Warning Banner */}
+          {isFalseStart && (
+            <div className="mb-2 inline-flex items-center gap-2 px-3 py-1 bg-red-600 text-white font-extrabold text-xs uppercase tracking-wider rounded-full shadow-lg animate-bounce">
+              <AlertTriangle className="w-4 h-4" />
+              <span>Ulilý start ({reactionTime.toFixed(3)}s &lt; 0.100s)</span>
+            </div>
+          )}
+
+          {/* Armed Indicator */}
+          {countdownState === 'armed' && (
+            <div className="mb-2 inline-flex items-center gap-2 px-3.5 py-1.5 bg-emerald-500/20 text-emerald-300 border border-emerald-500/50 font-bold text-xs uppercase tracking-wider rounded-full animate-pulse shadow-md">
+              <Radio className="w-4 h-4 text-emerald-400" />
+              <span>Čeká se na startovní pohyb / zvuk...</span>
+            </div>
+          )}
+
+          {countdownState !== 'idle' && countdownState !== 'started' && countdownState !== 'armed' && (
+            <div className="mb-2 inline-flex items-center gap-1.5 px-3 py-1 bg-amber-500/20 text-amber-300 border border-amber-500/50 font-bold text-xs uppercase tracking-wider rounded-full">
+              <span>
+                {countdownState === 'marks' && 'NA MÍSTA'}
+                {countdownState === 'ready' && 'PŘIPRAVIT SE'}
+                {countdownState === 'beeps' && 'ODPOČET...'}
+              </span>
+            </div>
+          )}
+
+          {/* Big Crisp Chrono Numbers */}
+          <div className="my-1 sm:my-3">
+            <div className="font-mono tabular-nums text-5xl xs:text-6xl sm:text-8xl md:text-9xl font-black tracking-tight text-white drop-shadow-[0_4px_24px_rgba(239,68,68,0.3)]">
+              {formatChrono(elapsedMs)}
+            </div>
+            <div className="text-[10px] sm:text-[11px] font-mono tracking-widest text-slate-400 uppercase mt-1">
+              {isRunning ? 'MĚŘENÍ BĚŽÍ' : `${routeDef.heightMeters.toFixed(0)}m Speed Chrono`}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Split Gates Bar */}
+      <div className="grid grid-cols-3 gap-2 max-w-md mx-auto text-left">
+        <button
+          onClick={() => recordSplit(1)}
+          disabled={!isRunning || split1Time !== null}
+          className={`min-h-[50px] p-2.5 rounded-2xl border transition-all flex flex-col justify-center ${
+            split1Time
+              ? 'bg-emerald-950/60 border-emerald-500/70 text-emerald-300'
+              : isRunning
+              ? 'bg-slate-900 border-slate-700 active:scale-95 text-slate-200'
+              : 'bg-slate-900/40 border-slate-800 text-slate-600'
+          }`}
+        >
+          <span className="text-[10px] font-bold text-slate-400">1. ÚSEK (5m)</span>
+          <span className="text-base font-mono font-bold">
+            {split1Time ? `${split1Time.toFixed(2)}s` : isRunning ? 'Zapsat' : '—'}
+          </span>
+        </button>
+
+        <button
+          onClick={() => recordSplit(2)}
+          disabled={!isRunning || split2Time !== null}
+          className={`min-h-[50px] p-2.5 rounded-2xl border transition-all flex flex-col justify-center ${
+            split2Time
+              ? 'bg-emerald-950/60 border-emerald-500/70 text-emerald-300'
+              : isRunning && split1Time
+              ? 'bg-slate-900 border-slate-700 active:scale-95 text-slate-200'
+              : 'bg-slate-900/40 border-slate-800 text-slate-600'
+          }`}
+        >
+          <span className="text-[10px] font-bold text-slate-400">2. ÚSEK (10m)</span>
+          <span className="text-base font-mono font-bold">
+            {split2Time ? `${split2Time.toFixed(2)}s` : isRunning ? 'Zapsat' : '—'}
+          </span>
+        </button>
+
+        <button
+          onClick={isRunning ? stopTimer : undefined}
+          disabled={!isRunning}
+          className={`min-h-[50px] p-2.5 rounded-2xl border transition-all flex flex-col justify-center ${
+            isRunning
+              ? 'bg-red-600/40 border-red-500 text-white animate-pulse'
+              : 'bg-slate-900/40 border-slate-800 text-slate-600'
+          }`}
+        >
+          <span className="text-[10px] font-bold text-slate-400">DOHMAT (15m)</span>
+          <span className="text-base font-mono font-bold">
+            {isRunning ? 'STOP!' : '—'}
+          </span>
+        </button>
+      </div>
+
+      {/* Primary Action Buttons */}
+      <div className="flex items-center justify-center gap-2 pt-1">
+        {!isRunning ? (
+          startMode === 'camera_motion' || startMode === 'sound_trigger' ? (
+            <button
+              onClick={handleArmSensorStart}
+              className={`flex-1 sm:flex-none min-h-[56px] sm:min-w-[220px] px-6 py-3 font-black text-base rounded-2xl shadow-lg transition-all flex items-center justify-center gap-2 ${
+                countdownState === 'armed'
+                  ? 'bg-amber-500 hover:bg-amber-400 text-slate-950'
+                  : 'bg-red-600 hover:bg-red-500 text-white'
+              }`}
+            >
+              {countdownState === 'armed' ? (
+                <>
+                  <Square className="w-5 h-5 fill-current" />
+                  <span>Zrušit hlídání</span>
+                </>
+              ) : (
+                <>
+                  <Radio className="w-5 h-5" />
+                  <span>Aktivovat senzor</span>
+                </>
+              )}
             </button>
           ) : (
             <button
-              onClick={stopTimer}
-              className="w-full sm:w-auto min-h-[58px] sm:min-w-[240px] px-8 py-4 bg-amber-500 hover:bg-amber-400 active:scale-98 text-slate-950 font-black text-lg rounded-2xl shadow-xl transition-all flex items-center justify-center gap-3"
+              onClick={startMode === 'ifsc_countdown' ? triggerIFSCCountdown : () => startTimerNow(0.138)}
+              disabled={countdownState !== 'idle' && countdownState !== 'started'}
+              className="flex-1 sm:flex-none min-h-[56px] sm:min-w-[220px] px-6 py-3 bg-red-600 hover:bg-red-500 text-white font-black text-base rounded-2xl shadow-lg shadow-red-600/30 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
             >
-              <Square className="w-6 h-6 fill-current" />
-              <span>{t.btnStop}</span>
+              <Play className="w-5 h-5 fill-current" />
+              <span>{startMode === 'ifsc_countdown' ? 'Start (Odpočet)' : 'Start'}</span>
             </button>
-          )}
+          )
+        ) : (
+          <button
+            onClick={stopTimer}
+            className="flex-1 sm:flex-none min-h-[56px] sm:min-w-[220px] px-6 py-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-base rounded-2xl shadow-lg transition-all flex items-center justify-center gap-2"
+          >
+            <Square className="w-5 h-5 fill-current" />
+            <span>Dohmat (Cíl)</span>
+          </button>
+        )}
 
-          <div className="flex items-center gap-2 w-full sm:w-auto">
-            <button
-              onClick={resetTimer}
-              className="flex-1 sm:flex-none min-h-[52px] px-5 py-3 bg-slate-900 hover:bg-slate-800 active:scale-95 text-slate-300 font-bold text-sm rounded-2xl border border-slate-800 transition-colors flex items-center justify-center gap-2"
-            >
-              <RotateCcw className="w-4 h-4" />
-              <span>{t.btnReset}</span>
-            </button>
-
-            <button
-              onClick={() => setShowSettings(!showSettings)}
-              className="min-h-[52px] min-w-[52px] px-4 py-3 bg-slate-900 hover:bg-slate-800 text-slate-300 rounded-2xl border border-slate-800 transition-colors flex items-center justify-center"
-              title="Nastavení senzorů a stěny"
-            >
-              <Sliders className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
+        <button
+          onClick={resetTimer}
+          title="Reset stopek"
+          className="min-h-[56px] min-w-[56px] px-3 bg-slate-900 hover:bg-slate-800 text-slate-300 rounded-2xl border border-slate-800 transition-colors flex items-center justify-center active:scale-95"
+        >
+          <RotateCcw className="w-5 h-5" />
+        </button>
       </div>
 
-      {/* Sensor Calibration Drawer */}
-      {(showSettings || startMode === 'camera_motion' || startMode === 'sound_trigger') && (
-        <div className="p-4 sm:p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="font-display font-bold text-sm text-slate-900 dark:text-white flex items-center gap-2">
-              <Camera className="w-4 h-4 text-red-600" />
-              <span>Senzory a kalibrace stěny</span>
-            </h3>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={toggleCamera}
-                className={`min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors ${
-                  cameraActive
-                    ? 'bg-red-600 text-white border-red-600'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'
-                }`}
-              >
-                {cameraActive ? 'Kamera aktivní' : 'Zapnout kameru'}
-              </button>
-              <button
-                onClick={toggleMic}
-                className={`min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors ${
-                  micActive
-                    ? 'bg-red-600 text-white border-red-600'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'
-                }`}
-              >
-                {micActive ? 'Mikrofon aktivní' : 'Zapnout mikrofon'}
-              </button>
-            </div>
-          </div>
-
-          {cameraError && (
-            <p className="text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 p-2.5 rounded-xl border border-amber-200 dark:border-amber-900">
-              {cameraError}
-            </p>
-          )}
-
-          {cameraActive && (
-            <div className="relative aspect-video max-w-md mx-auto bg-black rounded-2xl overflow-hidden border border-slate-800">
-              <video ref={videoRef} playsInline muted className="w-full h-full object-cover" />
-              <canvas ref={canvasRef} className="hidden" />
-              <div className="absolute top-2 left-3 right-3 h-10 border-2 border-dashed border-amber-400/90 bg-amber-400/10 rounded-lg flex items-center justify-between px-3 text-[10px] font-bold text-amber-300 uppercase">
-                <span>Cílová zóna {routeDef.heightMeters.toFixed(0)}m (Auto-Stop)</span>
-              </div>
-              <div className="absolute bottom-2 left-3 right-3 h-10 border-2 border-dashed border-emerald-400/90 bg-emerald-400/10 rounded-lg flex items-center justify-between px-3 text-[10px] font-bold text-emerald-300 uppercase">
-                <span>Startovní podložka (Auto-Start)</span>
-              </div>
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-            <div>
-              <div className="flex justify-between font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                <span>Citlivost optického pohybu: {motionSensitivity}%</span>
-                <span>Úroveň: {motionLevel}%</span>
-              </div>
-              <input
-                type="range"
-                min="15"
-                max="75"
-                value={motionSensitivity}
-                onChange={(e) => setMotionSensitivity(parseInt(e.target.value, 10))}
-                className="w-full accent-red-600"
-              />
-            </div>
-            <div>
-              <div className="flex justify-between font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                <span>Hlasitost startovního signálu: {soundThreshold} dB</span>
-                <span>Vstup: {soundLevel} dB</span>
-              </div>
-              <input
-                type="range"
-                min="30"
-                max="90"
-                value={soundThreshold}
-                onChange={(e) => setSoundThreshold(parseInt(e.target.value, 10))}
-                className="w-full accent-red-600"
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-200 dark:border-slate-800 text-xs">
-            <div>
-              <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                Lezecká stěna / Tělocvična
-              </label>
-              <input
-                type="text"
-                value={gymName}
-                onChange={(e) => setGymName(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white"
-                placeholder="Např. Big Wall Praha"
-              />
-            </div>
-            <div>
-              <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                Trénovaná beta cesty
-              </label>
-              <select
-                value={selectedBeta}
-                onChange={(e) => setSelectedBeta(e.target.value as any)}
-                className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white"
-              >
-                <option value="tomoa-skip">Tomoa Skip (WR standard pro 15m)</option>
-                <option value="standard">Klasická standardní beta (Všechny chyty)</option>
-                <option value="modern-dyno">Moderní skok (Přímo z 9 do 12)</option>
-                <option value="youth-flow">Mládežnický plynulý rytmus U13/U15</option>
-              </select>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Completed Run Result Card */}
+      {/* Completed Run Result Card with Recorded Video Playback */}
       {finishedRun && (
-        <div className="p-5 sm:p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl space-y-4 animate-in fade-in">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="p-4 sm:p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl space-y-3.5 animate-in fade-in">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="w-5 h-5 text-emerald-500" />
+              <span className="text-xl sm:text-2xl font-mono font-black text-slate-950 dark:text-white">
+                {finishedRun.totalTime.toFixed(3)}s
+              </span>
+              {finishedRun.isPersonalBest && (
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                  Nový PB!
+                </span>
+              )}
+            </div>
+
+            <button
+              onClick={() => onOpenAnalysis(finishedRun)}
+              className="px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-1.5"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Rozbor</span>
+            </button>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2 p-2 bg-slate-50 dark:bg-slate-950 rounded-2xl border border-slate-100 dark:border-slate-800 text-center text-xs">
             <div>
-              <div className="flex items-center gap-2">
-                <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0" />
-                <h3 className="font-display font-black text-xl text-slate-950 dark:text-white">
-                  Výsledný čas: {finishedRun.totalTime.toFixed(3)}s
-                </h3>
-                {finishedRun.isPersonalBest && (
-                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-black bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                    {t.newPb}
-                  </span>
+              <span className="text-[10px] text-slate-400 block font-bold">0–5m</span>
+              <span className="font-mono font-bold text-slate-900 dark:text-white mt-0.5 block">
+                {finishedRun.splits.split1.toFixed(2)}s
+              </span>
+            </div>
+            <div>
+              <span className="text-[10px] text-slate-400 block font-bold">5–10m</span>
+              <span className="font-mono font-bold text-slate-900 dark:text-white mt-0.5 block">
+                {finishedRun.splits.split2.toFixed(2)}s
+              </span>
+            </div>
+            <div>
+              <span className="text-[10px] text-slate-400 block font-bold">10–15m</span>
+              <span className="font-mono font-bold text-slate-900 dark:text-white mt-0.5 block">
+                {finishedRun.splits.split3.toFixed(2)}s
+              </span>
+            </div>
+          </div>
+
+          {/* Integrated Recorded Video Player */}
+          {finishedRun.videoUrl && (
+            <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-bold">
+                <span className="text-slate-900 dark:text-white flex items-center gap-1.5">
+                  <Video className="w-4 h-4 text-red-600" />
+                  <span>Videozáznam výlezu</span>
+                </span>
+
+                {showDeleteVideoConfirm ? (
+                  <div className="flex items-center gap-1.5 p-1 bg-red-50 dark:bg-red-950/60 rounded-xl border border-red-200 dark:border-red-900">
+                    <span className="text-[11px] text-red-600 dark:text-red-300 px-1 font-bold">
+                      Smazat video?
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleDeleteVideo}
+                      className="px-2.5 py-1 bg-red-600 hover:bg-red-700 text-white rounded-lg text-[11px] font-bold shadow-sm transition-colors"
+                    >
+                      Ano, smazat
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowDeleteVideoConfirm(false)}
+                      className="px-2 py-1 bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-300 rounded-lg text-[11px] transition-colors"
+                    >
+                      Zrušit
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <a
+                      href={finishedRun.videoUrl}
+                      download={`fifteen_run_${finishedRun.totalTime.toFixed(3)}s.webm`}
+                      className="px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:text-red-600 hover:bg-slate-200 transition-colors flex items-center gap-1 text-[11px] font-bold"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Stáhnout</span>
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => setShowDeleteVideoConfirm(true)}
+                      className="px-2.5 py-1 rounded-xl bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/50 transition-colors flex items-center gap-1 text-[11px] font-bold"
+                      title="Smazat nahrané video"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Smazat video</span>
+                    </button>
+                  </div>
                 )}
               </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                Trať: {routeDef.nameCs} · Reakční doba: {finishedRun.reactionTime.toFixed(3)}s · {finishedRun.gym}
-              </p>
-            </div>
 
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => onOpenAnalysis(finishedRun)}
-                className="min-h-[44px] px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold transition-all shadow-md active:scale-95 flex items-center justify-center gap-1.5"
-              >
-                <Sparkles className="w-4 h-4" />
-                <span>Rozbor techniky</span>
-              </button>
-            </div>
-          </div>
+              <div className="relative aspect-video rounded-2xl overflow-hidden bg-black border border-slate-800">
+                <video
+                  ref={playbackVideoRef}
+                  src={finishedRun.videoUrl}
+                  controls
+                  playsInline
+                  className="w-full h-full object-contain"
+                />
+              </div>
 
-          <div className="grid grid-cols-3 gap-2 sm:gap-3 p-3 bg-slate-50 dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-800 text-center">
-            <div>
-              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                Úsek 1 ({currentCategory === 'adults_15m' ? '0–5m' : '0–3.3m'})
-              </div>
-              <div className="text-base sm:text-lg font-mono font-bold text-slate-900 dark:text-white mt-0.5">
-                {finishedRun.splits.split1.toFixed(2)}s
-              </div>
-            </div>
-
-            <div className="border-x border-slate-200 dark:border-slate-800 px-1">
-              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                Úsek 2 ({currentCategory === 'adults_15m' ? '5–10m' : '3.3–6.6m'})
-              </div>
-              <div className="text-base sm:text-lg font-mono font-bold text-slate-900 dark:text-white mt-0.5">
-                {finishedRun.splits.split2.toFixed(2)}s
-              </div>
-            </div>
-
-            <div>
-              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                Úsek 3 ({currentCategory === 'adults_15m' ? '10–15m' : '6.6–10m'})
-              </div>
-              <div className="text-base sm:text-lg font-mono font-bold text-slate-900 dark:text-white mt-0.5">
-                {finishedRun.splits.split3.toFixed(2)}s
+              {/* Slow Motion Speed Controls */}
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-slate-500 font-medium">Rychlost přehrávání:</span>
+                <div className="flex items-center gap-1 p-0.5 bg-slate-100 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800">
+                  {[
+                    { spd: 0.25, label: '0.25x' },
+                    { spd: 0.5, label: '0.5x' },
+                    { spd: 1.0, label: '1.0x' },
+                  ].map((item) => (
+                    <button
+                      key={item.spd}
+                      onClick={() => handlePlaybackSpeedChange(item.spd)}
+                      className={`px-2.5 py-1 rounded-lg font-bold transition-all ${
+                        videoPlaybackRate === item.spd
+                          ? 'bg-red-600 text-white shadow-sm'
+                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+                      }`}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
-          </div>
+          )}
         </div>
       )}
-
-      {/* Tip for mobile/tablet placement */}
-      <div className="p-3.5 rounded-2xl bg-slate-100 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 flex items-start gap-3 text-xs text-slate-600 dark:text-slate-300">
-        <ShieldCheck className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
-        <div>
-          <strong className="text-slate-900 dark:text-white">Tip pro mobil a tablet:</strong> Pro kategorii <strong>{routeDef.nameCs}</strong> postavte zařízení 3–4 m od stěny. Záznamy výlezů se automaticky zálohují do vámi zvoleného privátního cloudu (Google Drive / OneDrive).
-        </div>
-      </div>
     </div>
   );
 };

@@ -16,6 +16,7 @@ import { AiAnalysisModal } from './components/AiAnalysisModal';
 import { CloudSyncModal } from './components/CloudSyncModal';
 import { LegalModal } from './components/LegalModal';
 import { PhoneQrModal } from './components/PhoneQrModal';
+import { SettingsModal } from './components/SettingsModal';
 import { RouteCategory, SpeedRun } from './types/climbing';
 import { getStoredRuns, getUserProfile } from './utils/storage';
 import { Language, getStoredLanguage, saveStoredLanguage, TRANSLATIONS } from './utils/i18n';
@@ -29,6 +30,7 @@ export default function App() {
   const [currentSelectedRun, setCurrentSelectedRun] = useState<SpeedRun | null>(null);
 
   // Modals
+  const [showSettings, setShowSettings] = useState<boolean>(false);
   const [showLogbook, setShowLogbook] = useState<boolean>(false);
   const [showCloudSync, setShowCloudSync] = useState<boolean>(false);
   const [showLegal, setShowLegal] = useState<boolean>(false);
@@ -75,25 +77,20 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors duration-200">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors duration-200 w-full max-w-full overflow-x-hidden">
       {/* Strict 3-zone Top Bar Contract */}
       <TopBar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         onOpenLogbook={() => setShowLogbook(true)}
-        onOpenCloudSync={() => setShowCloudSync(true)}
-        onOpenLegal={() => setShowLegal(true)}
-        onOpenPhoneTest={() => setShowPhoneQr(true)}
-        isDark={isDark}
-        setIsDark={setIsDark}
+        onOpenSettings={() => setShowSettings(true)}
         currentCategory={currentCategory}
         onSelectCategory={setCurrentCategory}
         lang={lang}
-        onSelectLang={handleLanguageChange}
       />
 
       {/* Main Responsive Canvas (Phones & Tablets) */}
-      <main className="flex-1 pb-24 md:pb-12">
+      <main className="flex-1 pb-28 md:pb-12 w-full max-w-full overflow-x-hidden">
         {activeTab === 'timer' && (
           <SmartTimer
             onRunFinished={handleRunFinished}
@@ -174,6 +171,20 @@ export default function App() {
         <PhoneQrModal
           onClose={() => setShowPhoneQr(false)}
           lang={lang}
+        />
+      )}
+
+      {/* Unified Settings Modal (Language, Theme, Audio tones, Cloud, Legal, Phone test) */}
+      {showSettings && (
+        <SettingsModal
+          onClose={() => setShowSettings(false)}
+          lang={lang}
+          onSelectLang={handleLanguageChange}
+          isDark={isDark}
+          setIsDark={setIsDark}
+          onOpenCloudSync={() => setShowCloudSync(true)}
+          onOpenLegal={() => setShowLegal(true)}
+          onOpenPhoneTest={() => setShowPhoneQr(true)}
         />
       )}
     </div>

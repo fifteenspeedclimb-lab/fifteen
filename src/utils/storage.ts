@@ -147,6 +147,31 @@ export function updateRunAnalysis(runId: string, analysis: SpeedRun['aiAnalysis'
   return updated;
 }
 
+export function updateRunVideo(runId: string, videoUrl: string): SpeedRun[] {
+  const runs = getStoredRuns();
+  const updated = runs.map(r => (r.id === runId ? { ...r, videoUrl } : r));
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+  }
+  return updated;
+}
+
+export function removeRunVideo(runId: string): SpeedRun[] {
+  const runs = getStoredRuns();
+  const updated = runs.map(r => {
+    if (r.id === runId) {
+      const copy = { ...r };
+      delete copy.videoUrl;
+      return copy;
+    }
+    return r;
+  });
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+  }
+  return updated;
+}
+
 export function getUserProfile(): UserProfile {
   if (typeof window === 'undefined') return DEFAULT_PROFILE;
   try {

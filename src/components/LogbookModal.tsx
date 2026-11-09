@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { Download, Trash2, Trophy, Sparkles } from 'lucide-react';
+import { Download, Trash2, Trophy, Sparkles, Video, Play, X } from 'lucide-react';
 import { SpeedRun } from '../types/climbing';
-import { deleteRun } from '../utils/storage';
+import { deleteRun, removeRunVideo } from '../utils/storage';
 import { Language, TRANSLATIONS } from '../utils/i18n';
 
 interface LogbookModalProps {
@@ -21,6 +21,9 @@ export const LogbookModal: React.FC<LogbookModalProps> = ({
 }) => {
   const t = TRANSLATIONS[lang];
   const [filterBeta, setFilterBeta] = useState<string>('all');
+  const [activeVideoRun, setActiveVideoRun] = useState<SpeedRun | null>(null);
+  const [deletingRunId, setDeletingRunId] = useState<string | null>(null);
+  const [confirmDeleteVideoId, setConfirmDeleteVideoId] = useState<string | null>(null);
 
   const filteredRuns = runs.filter((r) =>
     filterBeta === 'all' ? true : r.betaUsed === filterBeta
@@ -28,10 +31,21 @@ export const LogbookModal: React.FC<LogbookModalProps> = ({
 
   const bestTime = runs.length > 0 ? Math.min(...runs.map((r) => r.totalTime)) : 0;
 
-  const handleDelete = (id: string) => {
-    if (confirm('Smazat tento záznam z deníku?')) {
-      const updated = deleteRun(id);
-      onRunsChanged(updated);
+  const confirmDeleteRun = (id: string) => {
+    const updated = deleteRun(id);
+    onRunsChanged(updated);
+    setDeletingRunId(null);
+    if (activeVideoRun?.id === id) {
+      setActiveVideoRun(null);
+    }
+  };
+
+  const confirmDeleteVideo = (id: string) => {
+    const updated = removeRunVideo(id);
+    onRunsChanged(updated);
+    setConfirmDeleteVideoId(null);
+    if (activeVideoRun?.id === id) {
+      setActiveVideoRun((prev) => (prev ? { ...prev, videoUrl: undefined } : null));
     }
   };
 
@@ -162,6 +176,17 @@ export const LogbookModal: React.FC<LogbookModalProps> = ({
                       PR
                     </span>
                   )}
+                  {run.videoUrl && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveVideoRun(run)}
+                      className="px-2 py-0.5 text-[10px] font-bold bg-red-100 hover:bg-red-200 text-red-800 dark:bg-red-950 dark:hover:bg-red-900 dark:text-red-300 rounded-md flex items-center gap-1 transition-colors"
+                      title="Přehrát nebo spravovat video výlezu"
+                    >
+                      <Play className="w-2.5 h-2.5 fill-current text-red-600" />
+                      <span>Video</span>
+                    </button>
+                  )}
                 </div>
                 <div className="text-[11px] text-slate-500 mt-0.5">
                   {new Date(run.date).toLocaleDateString()} · {run.gym}
@@ -182,17 +207,115 @@ export const LogbookModal: React.FC<LogbookModalProps> = ({
                   <Sparkles className="w-3.5 h-3.5" />
                   <span>Rozbor</span>
                 </button>
-                <button
-                  onClick={() => handleDelete(run.id)}
-                  className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 hover:text-red-600"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+
+                {deletingRunId === run.id ? (
+                  <div className="flex items-center gap-1 bg-red-50 dark:bg-red-950/60 p-1 rounded-xl border border-red-200 dark:border-red-900">
+                    <span className="text-[10px] text-red-600 dark:text-red-400 font-bold px-1">
+                      Smazat?
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => confirmDeleteRun(run.id)}
+                      className="px-2 py-0.5 bg-red-600 text-white rounded text-[10px] font-bold hover:bg-red-700"
+                    >
+                      Ano
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDeletingRunId(null)}
+                      className="px-2 py-0.5 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 rounded text-[10px]"
+                    >
+                      Ne
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setDeletingRunId(run.id)}
+                    className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 hover:text-red-600"
+                    title="Smazat záznam"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                )}
               </div>
             </div>
           ))}
         </div>
       </div>
+
+      {/* Floating Video Preview & Management Modal */}
+      {activeVideoRun && activeVideoRun.videoUrl && (
+        <div className="fixed inset-0 z-60 bg-black/75 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-slate-950 border border-slate-800 rounded-3xl max-w-lg w-full p-4 sm:p-5 text-white space-y-3.5 shadow-2xl">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <Video className="w-4 h-4 text-red-500" />
+                <span className="font-bold text-sm">
+                  Záznam {activeVideoRun.totalTime.toFixed(3)}s · {activeVideoRun.gym}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveVideoRun(null)}
+                className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="relative aspect-video rounded-2xl overflow-hidden bg-black border border-slate-800">
+              <video
+                src={activeVideoRun.videoUrl}
+                controls
+                autoPlay
+                playsInline
+                className="w-full h-full object-contain"
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-xs">
+              <a
+                href={activeVideoRun.videoUrl}
+                download={`fifteen_run_${activeVideoRun.totalTime.toFixed(3)}s.webm`}
+                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold flex items-center gap-1.5 transition-colors"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Stáhnout do zařízení</span>
+              </a>
+
+              {confirmDeleteVideoId === activeVideoRun.id ? (
+                <div className="flex items-center gap-1.5 p-1 bg-red-950/70 rounded-xl border border-red-900">
+                  <span className="text-[11px] text-red-300 px-1 font-bold">Opravdu smazat?</span>
+                  <button
+                    type="button"
+                    onClick={() => confirmDeleteVideo(activeVideoRun.id)}
+                    className="px-2.5 py-1 bg-red-600 hover:bg-red-700 text-white rounded-lg text-[11px] font-bold"
+                  >
+                    Ano, smazat
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDeleteVideoId(null)}
+                    className="px-2 py-1 bg-slate-800 text-slate-300 hover:bg-slate-700 rounded-lg text-[11px]"
+                  >
+                    Zrušit
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmDeleteVideoId(activeVideoRun.id)}
+                  className="px-3 py-1.5 rounded-xl bg-red-950/50 hover:bg-red-900/60 text-red-400 font-bold flex items-center gap-1.5 transition-colors border border-red-900/50"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Smazat video</span>
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

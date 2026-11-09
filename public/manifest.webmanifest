@@ -1,0 +1,27 @@
+{
+  "id": "com.fifteen.speedclimb",
+  "name": "Fifteen – Speed Climbing App",
+  "short_name": "Fifteen",
+  "description": "Profesionální časomíra a AI trenér rychlolezení na 15m stěně",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#090d16",
+  "theme_color": "#090d16",
+  "categories": ["sports", "fitness"],
+  "icons": [
+    {
+      "src": "/assets/aistudio/Gemini_Generated_Image_itws2vitws2vitws_3645fa51.jpg",
+      "sizes": "192x192",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/assets/aistudio/Gemini_Generated_Image_itws2vitws2vitws_3645fa51.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ]
+}
