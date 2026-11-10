@@ -15,7 +15,10 @@ import {
   Trash2,
   RefreshCw,
   X,
-  Volume2
+  Volume2,
+  Target,
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
 import {
   playIFSCPrepTone,
@@ -75,6 +78,10 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const [videoPlaybackRate, setVideoPlaybackRate] = useState<number>(1.0);
   const [showDeleteVideoConfirm, setShowDeleteVideoConfirm] = useState<boolean>(false);
 
+  // Viewfinder & Positioning Helpers
+  const [showGuides, setShowGuides] = useState<boolean>(true);
+  const [cameraFit, setCameraFit] = useState<'contain' | 'cover'>('contain');
+
   // Discrete Calibrated Target Zones (Percentages)
   const [wallPreset, setWallPreset] = useState<'standard_15m' | 'compact_10m'>('standard_15m');
   const [sensitivityPreset, setSensitivityPreset] = useState<'low' | 'medium' | 'high'>('medium');
@@ -94,6 +101,17 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const rafRef = useRef<number | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const playbackVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  // Instant mounting callback ref for foolproof video stream attachment
+  const setVideoElement = useCallback((element: HTMLVideoElement | null) => {
+    videoRef.current = element;
+    if (element && mediaStreamRef.current) {
+      if (element.srcObject !== mediaStreamRef.current) {
+        element.srcObject = mediaStreamRef.current;
+      }
+      element.play().catch(() => {});
+    }
+  }, []);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const prevImageDataRef = useRef<Uint8ClampedArray | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -323,7 +341,17 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     }
   };
 
-  // Safe camera toggle with facingMode
+  // Stream attachment synchronization hook
+  useEffect(() => {
+    if (cameraActive && videoRef.current && mediaStreamRef.current) {
+      if (videoRef.current.srcObject !== mediaStreamRef.current) {
+        videoRef.current.srcObject = mediaStreamRef.current;
+      }
+      videoRef.current.play().catch(() => {});
+    }
+  }, [cameraActive]);
+
+  // Safe camera toggle with facingMode and high-definition resolution for 15m wall clarity
   const startCameraStream = async (targetFacing: 'environment' | 'user') => {
     setCameraError(null);
     if (mediaStreamRef.current) {
@@ -335,22 +363,30 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       let stream: MediaStream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: targetFacing }, width: { ideal: 640 }, height: { ideal: 480 } },
+          video: {
+            facingMode: { ideal: targetFacing },
+            width: { ideal: 1280, min: 640 },
+            height: { ideal: 720, min: 480 },
+          },
           audio: false,
         });
       } catch {
-        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: targetFacing },
+          audio: false,
+        });
       }
 
       mediaStreamRef.current = stream;
+      setCameraActive(true);
+      setFacingMode(targetFacing);
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         videoRef.current.play().catch(() => {});
       }
-      setCameraActive(true);
-      setFacingMode(targetFacing);
     } catch {
-      setCameraError('Kamera není dostupná nebo byl zamítnut přístup.');
+      setCameraError('Kamera není dostupná nebo byl zamítnut přístup. Zkontrolujte oprávnění.');
       setCameraActive(false);
     }
   };
@@ -632,8 +668,8 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         </div>
       </div>
 
-      {/* Camera Live Toggle & Recording Control Bar */}
-      <div className="flex items-center justify-between p-2 sm:p-2.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs">
+      {/* Camera Live Toggle & Viewfinder Positioning Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-2 p-2 sm:p-2.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs">
         <button
           onClick={toggleCamera}
           className={`min-h-[40px] px-3.5 py-1.5 rounded-xl font-bold transition-all flex items-center gap-2 ${
@@ -647,10 +683,35 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         </button>
 
         {cameraActive && (
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+            {/* Guide overlay toggle */}
+            <button
+              onClick={() => setShowGuides(!showGuides)}
+              className={`min-h-[38px] px-2.5 sm:px-3 py-1 rounded-xl font-bold transition-all flex items-center gap-1 border ${
+                showGuides
+                  ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 border-emerald-300 dark:border-emerald-800'
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-400 border-transparent'
+              }`}
+              title="Zobrazit/skrýt pomocné zóny cíle a startu"
+            >
+              <Target className="w-3.5 h-3.5" />
+              <span className="hidden xs:inline">Zóny stěny</span>
+            </button>
+
+            {/* Fit mode toggle: contain vs cover */}
+            <button
+              onClick={() => setCameraFit(cameraFit === 'contain' ? 'cover' : 'contain')}
+              className="min-h-[38px] px-2.5 sm:px-3 py-1 rounded-xl font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors flex items-center gap-1"
+              title={cameraFit === 'contain' ? 'Zobrazen celý záběr stěny (bez ořezu)' : 'Zobrazen vyplněný záběr'}
+            >
+              {cameraFit === 'contain' ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+              <span className="hidden sm:inline">{cameraFit === 'contain' ? 'Celý záběr ↕' : 'Výplň'}</span>
+            </button>
+
+            {/* Auto video record toggle */}
             <button
               onClick={() => setRecordVideoOnRun(!recordVideoOnRun)}
-              className={`min-h-[38px] px-3 py-1 rounded-xl font-bold transition-all flex items-center gap-1.5 border ${
+              className={`min-h-[38px] px-2.5 sm:px-3 py-1 rounded-xl font-bold transition-all flex items-center gap-1 border ${
                 recordVideoOnRun
                   ? 'bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 border-red-300 dark:border-red-900'
                   : 'bg-slate-100 dark:bg-slate-800 text-slate-400 border-transparent'
@@ -660,6 +721,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
               <span>{recordVideoOnRun ? 'Záznam: ZAP' : 'Záznam: VYP'}</span>
             </button>
 
+            {/* Switch facing front/back */}
             <button
               onClick={switchCameraFacing}
               title="Otočit kameru (Přední / Zadní)"
@@ -679,19 +741,21 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
       {/* Main Screen: Active Camera Viewport OR Clean Athletic Digital Card */}
       {cameraActive ? (
-        /* ACTIVE CAMERA HUD VIEWPORT */
-        <div className="relative rounded-3xl bg-black border-2 border-slate-800 shadow-2xl overflow-hidden aspect-[4/3] sm:aspect-video flex items-center justify-center select-none">
+        /* ACTIVE CAMERA HUD VIEWPORT WITH CRYSTAL-CLEAR POSITIONING */
+        <div className="relative rounded-3xl bg-black border-2 border-slate-800 shadow-2xl overflow-hidden aspect-[4/3] sm:aspect-video flex items-center justify-center select-none group">
           <video
-            ref={videoRef}
+            ref={setVideoElement}
             playsInline
             muted
             autoPlay
-            className="w-full h-full object-cover"
+            className={`w-full h-full transition-all duration-200 ${
+              cameraFit === 'contain' ? 'object-contain bg-black' : 'object-cover'
+            }`}
           />
           <canvas ref={canvasRef} className="hidden" />
 
-          {/* Top Camera Status Bar */}
-          <div className="absolute top-3 left-3 right-3 flex items-center justify-between z-10 pointer-events-none">
+          {/* Top Status & Viewfinder Bar */}
+          <div className="absolute top-3 left-3 right-3 flex items-center justify-between z-20 pointer-events-none">
             {isRecording ? (
               <div className="px-3 py-1 rounded-full bg-red-600 text-white font-mono font-black text-xs uppercase tracking-wider flex items-center gap-1.5 shadow-lg animate-pulse">
                 <span className="w-2.5 h-2.5 rounded-full bg-white animate-ping" />
@@ -699,8 +763,9 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                 <span>{(elapsedMs / 1000).toFixed(1)}s</span>
               </div>
             ) : (
-              <div className="px-2.5 py-0.5 rounded-full bg-black/60 backdrop-blur-md text-white font-mono text-[11px] font-bold border border-white/20">
-                LIVE KAMERA
+              <div className="px-2.5 py-1 rounded-full bg-black/70 backdrop-blur-md text-white font-mono text-[11px] font-bold border border-white/20 flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span>LIVE HLEDÁČEK ({facingMode === 'environment' ? 'Zadní kamera' : 'Přední'})</span>
               </div>
             )}
 
@@ -709,43 +774,89 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                 ULILÝ START!
               </div>
             )}
-          </div>
 
-          {/* Calibration Overlay Lines for Start & Finish */}
-          <div
-            style={{ top: `${finishZoneY}%`, height: '16%' }}
-            className="absolute left-3 right-3 border-2 border-dashed border-red-500/80 bg-red-500/10 rounded-xl flex items-center justify-center text-[10px] font-bold text-red-200 uppercase pointer-events-none"
-          >
-            🔴 Cíl (Dohmat 15m)
-          </div>
-
-          <div
-            style={{ top: `${startZoneY}%`, height: '16%' }}
-            className="absolute left-3 right-3 border-2 border-dashed border-emerald-400/80 bg-emerald-500/10 rounded-xl flex items-center justify-center text-[10px] font-bold text-emerald-200 uppercase pointer-events-none"
-          >
-            🟢 Startovní podložka (Noha)
-          </div>
-
-          {/* Giant Chrono HUD Overlay */}
-          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none p-4">
-            {countdownState === 'armed' && (
-              <div className="mb-2 px-3.5 py-1 bg-emerald-500/80 text-white font-black text-xs uppercase tracking-wider rounded-full shadow-lg animate-pulse">
-                ČEKÁ SE NA ODRAZ Z PODLOŽKY
+            {/* Non-intrusive floating chrono badge when IDLE so screen is 100% CLEAR for camera positioning! */}
+            {!isRunning && elapsedMs === 0 && (
+              <div className="px-3.5 py-1 rounded-xl bg-black/80 backdrop-blur-md border border-white/25 text-white font-mono font-black text-sm sm:text-base shadow-xl">
+                00.000s
               </div>
             )}
+          </div>
 
-            {countdownState !== 'idle' && countdownState !== 'started' && countdownState !== 'armed' && (
-              <div className="mb-2 px-4 py-1 bg-amber-500 text-slate-950 font-black text-xs uppercase tracking-widest rounded-full shadow-lg">
-                {countdownState === 'marks' && 'NA MÍSTA'}
-                {countdownState === 'ready' && 'PŘIPRAVIT SE'}
-                {countdownState === 'beeps' && 'ODPOČET...'}
+          {/* Guidelines for 15m Wall: Finish touch pad, 10m gate, 5m gate, and Start mat */}
+          {showGuides && (
+            <div className="absolute inset-0 pointer-events-none z-10">
+              {/* Vertical alignment centerline for straightening tripod / phone */}
+              <div className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2 w-px border-l border-dashed border-white/25" />
+
+              {/* 🔴 Finish Target Zone: 15m Finish Pad */}
+              <div
+                style={{ top: `${finishZoneY}%`, height: '14%' }}
+                className="absolute left-3 right-3 border-2 border-dashed border-red-500/90 bg-red-500/15 rounded-xl flex items-center justify-between px-3 text-[11px] font-bold text-red-100 shadow-sm"
+              >
+                <span>🔴 Cíl (Dohmat 15m)</span>
+                <span className="text-[10px] font-mono opacity-80">Vrchol stěny</span>
               </div>
-            )}
 
-            <div className="font-mono tabular-nums text-6xl sm:text-8xl md:text-9xl font-black text-white drop-shadow-[0_4px_30px_rgba(0,0,0,0.9)] tracking-tight">
-              {formatChrono(elapsedMs)}
+              {/* 🟡 10m Split Gate (U15) */}
+              <div
+                style={{ top: '38%' }}
+                className="absolute left-6 right-6 border-t border-dashed border-amber-400/80 flex items-center justify-between px-2 pt-0.5 text-[10px] font-bold text-amber-300"
+              >
+                <span>🟡 Mezičas 10m (Brána U15)</span>
+              </div>
+
+              {/* 🔵 5m Split Gate */}
+              <div
+                style={{ top: '62%' }}
+                className="absolute left-6 right-6 border-t border-dashed border-blue-400/80 flex items-center justify-between px-2 pt-0.5 text-[10px] font-bold text-blue-300"
+              >
+                <span>🔵 Mezičas 5m (První brána)</span>
+              </div>
+
+              {/* 🟢 Start Mat Zone: Foot on Start Pad */}
+              <div
+                style={{ top: `${startZoneY}%`, height: '15%' }}
+                className="absolute left-3 right-3 border-2 border-dashed border-emerald-400/90 bg-emerald-500/15 rounded-xl flex items-center justify-between px-3 text-[11px] font-bold text-emerald-100 shadow-sm"
+              >
+                <span>🟢 Startovní podložka (Noha)</span>
+                <span className="text-[10px] font-mono opacity-80">Základna</span>
+              </div>
             </div>
-          </div>
+          )}
+
+          {/* Positioning Helper Instruction Banner when Idle */}
+          {!isRunning && elapsedMs === 0 && (
+            <div className="absolute bottom-3 left-3 right-3 flex items-center justify-center pointer-events-none z-20">
+              <div className="px-3.5 py-1.5 rounded-full bg-black/80 backdrop-blur-md border border-white/20 text-white text-xs font-bold shadow-xl flex items-center gap-1.5 text-center">
+                <Target className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                <span>Namiřte kameru: startovní deska dole (zelená) a cíl nahoře (červená)</span>
+              </div>
+            </div>
+          )}
+
+          {/* Chrono Display during active climb or countdown */}
+          {(isRunning || elapsedMs > 0 || countdownState !== 'idle') && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none p-4 z-20">
+              {countdownState === 'armed' && (
+                <div className="mb-2 px-4 py-1.5 bg-emerald-500/90 text-white font-black text-xs uppercase tracking-wider rounded-full shadow-lg animate-pulse">
+                  ČEKÁ SE NA ODRAZ Z PODLOŽKY
+                </div>
+              )}
+
+              {countdownState !== 'idle' && countdownState !== 'started' && countdownState !== 'armed' && (
+                <div className="mb-2 px-4 py-1 bg-amber-500 text-slate-950 font-black text-xs uppercase tracking-widest rounded-full shadow-lg">
+                  {countdownState === 'marks' && 'NA MÍSTA'}
+                  {countdownState === 'ready' && 'PŘIPRAVIT SE'}
+                  {countdownState === 'beeps' && 'ODPOČET...'}
+                </div>
+              )}
+
+              <div className="font-mono tabular-nums text-6xl sm:text-8xl md:text-9xl font-black text-white drop-shadow-[0_4px_30px_rgba(0,0,0,0.95)] tracking-tight">
+                {formatChrono(elapsedMs)}
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         /* SLEEK DIGITAL CHRONO CARD */

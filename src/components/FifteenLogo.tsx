@@ -9,28 +9,52 @@ export const FifteenLogo: React.FC<FifteenLogoProps> = ({
   className = '',
   size = 'md',
 }) => {
-  // Height presets for different viewport scenarios
+  // Height presets enlarged by a third (+33%) for bold athletic presence
   const heightStyles = {
-    sm: 'h-7 sm:h-9',
-    md: 'h-8 xs:h-9 sm:h-11',
-    lg: 'h-11 sm:h-14 md:h-16',
-    xl: 'h-16 sm:h-22',
+    sm: 'h-9 sm:h-12',
+    md: 'h-11 xs:h-13 sm:h-15 md:h-16',
+    lg: 'h-15 sm:h-19 md:h-22',
+    xl: 'h-20 sm:h-26 md:h-30',
   };
 
   return (
     <div
-      className={`inline-flex items-center select-none transition-transform active:scale-98 ${className}`}
+      className={`inline-flex items-center justify-center select-none transition-transform hover:scale-[1.02] active:scale-98 ${className}`}
       title="FIFTEEN – Speed Climbing App"
     >
-      {/* Authentic High-Fidelity Brand Logo from User Spec */}
-      <div className="relative flex items-center justify-center bg-black rounded-xl sm:rounded-2xl px-2 py-0.5 sm:px-2.5 sm:py-1 border border-slate-800/80 shadow-md overflow-hidden">
-        <img
-          src="/assets/aistudio/Gemini_Generated_Image_itws2vitws2vitws_3645fa51.jpg"
-          alt="FIFTEEN Speed Climbing App"
-          className={`${heightStyles[size]} w-auto object-contain max-w-[140px] xs:max-w-[180px] sm:max-w-[240px]`}
-          loading="eager"
-        />
-      </div>
+      {/* Official Transparent PNG Brand Logo (New 2026 Asset) */}
+      <img
+        src="/assets/aistudio/Logo_fb76e3be.png"
+        alt="FIFTEEN Speed Climbing App"
+        className={`${heightStyles[size]} w-auto object-contain max-w-[220px] xs:max-w-[270px] sm:max-w-[360px] drop-shadow-sm`}
+        loading="eager"
+      />
     </div>
+  );
+};
+
+interface FifteenAppIconProps {
+  className?: string;
+  size?: 'sm' | 'md' | 'lg' | 'xl';
+}
+
+export const FifteenAppIcon: React.FC<FifteenAppIconProps> = ({
+  className = '',
+  size = 'md',
+}) => {
+  const sizeStyles = {
+    sm: 'w-6 h-6 rounded-lg',
+    md: 'w-8 h-8 rounded-xl',
+    lg: 'w-12 h-12 rounded-2xl',
+    xl: 'w-20 h-20 rounded-3xl',
+  };
+
+  return (
+    <img
+      src="/assets/aistudio/icona_fifteen_0ee00877.jpg"
+      alt="Fifteen App Icon"
+      className={`object-cover shadow-md select-none shrink-0 ${sizeStyles[size]} ${className}`}
+      loading="eager"
+    />
   );
 };

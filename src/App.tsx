@@ -15,7 +15,6 @@ import { LogbookModal } from './components/LogbookModal';
 import { AiAnalysisModal } from './components/AiAnalysisModal';
 import { CloudSyncModal } from './components/CloudSyncModal';
 import { LegalModal } from './components/LegalModal';
-import { PhoneQrModal } from './components/PhoneQrModal';
 import { SettingsModal } from './components/SettingsModal';
 import { RouteCategory, SpeedRun } from './types/climbing';
 import { getStoredRuns, getUserProfile } from './utils/storage';
@@ -34,7 +33,6 @@ export default function App() {
   const [showLogbook, setShowLogbook] = useState<boolean>(false);
   const [showCloudSync, setShowCloudSync] = useState<boolean>(false);
   const [showLegal, setShowLegal] = useState<boolean>(false);
-  const [showPhoneQr, setShowPhoneQr] = useState<boolean>(false);
   const [analyzingRun, setAnalyzingRun] = useState<SpeedRun | null>(null);
 
   const t = TRANSLATIONS[lang];
@@ -166,15 +164,7 @@ export default function App() {
         />
       )}
 
-      {/* Mobile Phone Test & Setup Guide Modal */}
-      {showPhoneQr && (
-        <PhoneQrModal
-          onClose={() => setShowPhoneQr(false)}
-          lang={lang}
-        />
-      )}
-
-      {/* Unified Settings Modal (Language, Theme, Audio tones, Cloud, Legal, Phone test) */}
+      {/* Unified Settings Modal (Language, Theme, Audio tones, Cloud, Legal) */}
       {showSettings && (
         <SettingsModal
           onClose={() => setShowSettings(false)}
@@ -184,7 +174,6 @@ export default function App() {
           setIsDark={setIsDark}
           onOpenCloudSync={() => setShowCloudSync(true)}
           onOpenLegal={() => setShowLegal(true)}
-          onOpenPhoneTest={() => setShowPhoneQr(true)}
         />
       )}
     </div>

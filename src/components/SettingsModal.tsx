@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Settings, Volume2, Moon, Sun, Globe, Shield, Smartphone, Play, Check, Cloud } from 'lucide-react';
+import { Settings, Volume2, Moon, Sun, Globe, Shield, Play, Check, Cloud } from 'lucide-react';
 import { Language, TRANSLATIONS } from '../utils/i18n';
 import {
   ToneStyle,
@@ -8,6 +8,7 @@ import {
   playIFSCPrepTone,
   playIFSCStartTone,
 } from '../utils/audio';
+import { FifteenAppIcon } from './FifteenLogo';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -17,7 +18,6 @@ interface SettingsModalProps {
   setIsDark: (dark: boolean) => void;
   onOpenCloudSync: () => void;
   onOpenLegal: () => void;
-  onOpenPhoneTest: () => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -28,7 +28,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   setIsDark,
   onOpenCloudSync,
   onOpenLegal,
-  onOpenPhoneTest,
 }) => {
   const [audioSettings, setAudioSettings] = useState(getStoredAudioSettings());
   const [isPlayingTest, setIsPlayingTest] = useState(false);
@@ -65,10 +64,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         {/* Header */}
         <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
           <div className="flex items-center gap-2.5">
-            <Settings className="w-5 h-5 text-red-600" />
-            <h2 className="font-display font-black text-xl text-slate-950 dark:text-white">
-              {lang === 'cs' ? 'Nastavení' : lang === 'de' ? 'Einstellungen' : 'Settings'}
-            </h2>
+            <FifteenAppIcon size="sm" className="w-8 h-8 rounded-xl shadow-sm" />
+            <div>
+              <h2 className="font-display font-black text-xl text-slate-950 dark:text-white leading-tight">
+                {lang === 'cs' ? 'Nastavení' : lang === 'de' ? 'Einstellungen' : 'Settings'}
+              </h2>
+              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Fifteen v1.0</span>
+            </div>
           </div>
           <button
             onClick={onClose}
@@ -206,27 +208,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         </div>
 
         {/* 4. Quick Actions Hub */}
-        <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
-          <button
-            onClick={() => {
-              onClose();
-              onOpenPhoneTest();
-            }}
-            className="p-2.5 bg-slate-50 dark:bg-slate-950 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-800 text-center transition-colors"
-          >
-            <Smartphone className="w-4 h-4 text-red-600 mx-auto mb-1" />
-            <div className="text-[11px] font-bold text-slate-900 dark:text-white">Do mobilu</div>
-          </button>
-
+        <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
           <button
             onClick={() => {
               onClose();
               onOpenCloudSync();
             }}
-            className="p-2.5 bg-slate-50 dark:bg-slate-950 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-800 text-center transition-colors"
+            className="p-2.5 bg-slate-50 dark:bg-slate-950 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-800 text-center transition-colors flex items-center justify-center gap-2"
           >
-            <Cloud className="w-4 h-4 text-blue-500 mx-auto mb-1" />
-            <div className="text-[11px] font-bold text-slate-900 dark:text-white">Cloud</div>
+            <Cloud className="w-4 h-4 text-blue-500" />
+            <div className="text-xs font-bold text-slate-900 dark:text-white">Cloud synchronizace</div>
           </button>
 
           <button
@@ -234,10 +225,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               onClose();
               onOpenLegal();
             }}
-            className="p-2.5 bg-slate-50 dark:bg-slate-950 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-800 text-center transition-colors"
+            className="p-2.5 bg-slate-50 dark:bg-slate-950 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-800 text-center transition-colors flex items-center justify-center gap-2"
           >
-            <Shield className="w-4 h-4 text-emerald-500 mx-auto mb-1" />
-            <div className="text-[11px] font-bold text-slate-900 dark:text-white">Právní</div>
+            <Shield className="w-4 h-4 text-emerald-500" />
+            <div className="text-xs font-bold text-slate-900 dark:text-white">Pravidla a licence</div>
           </button>
         </div>
 

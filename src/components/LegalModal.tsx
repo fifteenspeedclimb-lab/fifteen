@@ -1,6 +1,7 @@
 import React from 'react';
 import { Shield, ShieldAlert, CheckCircle2, Lock, Scale, FileText, AlertTriangle } from 'lucide-react';
 import { Language, TRANSLATIONS } from '../utils/i18n';
+import { FifteenAppIcon } from './FifteenLogo';
 
 interface LegalModalProps {
   onClose: () => void;
@@ -15,13 +16,13 @@ export const LegalModal: React.FC<LegalModalProps> = ({ onClose, lang }) => {
       <div className="bg-white dark:bg-slate-900 rounded-3xl max-w-2xl w-full p-5 sm:p-8 border border-slate-200 dark:border-slate-800 shadow-2xl space-y-6 max-h-[90vh] overflow-y-auto">
         {/* Header */}
         <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
-          <div className="flex items-center gap-2.5">
-            <Scale className="w-6 h-6 text-red-600" />
+          <div className="flex items-center gap-3">
+            <FifteenAppIcon size="sm" className="w-8 h-8 rounded-xl shadow-sm" />
             <div>
               <h2 className="font-display font-black text-lg sm:text-xl text-slate-950 dark:text-white">
                 {t.legalTitle}
               </h2>
-              <span className="text-[11px] text-slate-500">Právní analýza a regulatorní rámec</span>
+              <span className="text-[11px] text-slate-500">Právní analýza a regulatorní rámec · Fifteen</span>
             </div>
           </div>
           <button
