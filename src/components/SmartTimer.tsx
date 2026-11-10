@@ -18,7 +18,13 @@ import {
   Volume2,
   Target,
   Maximize2,
-  Minimize2
+  Minimize2,
+  Sliders,
+  ChevronUp,
+  ChevronDown,
+  Check,
+  Activity,
+  Info
 } from 'lucide-react';
 import {
   playIFSCPrepTone,
@@ -32,6 +38,45 @@ import { RouteCategory, SpeedRun } from '../types/climbing';
 import { saveRun, getUserProfile, updateRunVideo, removeRunVideo } from '../utils/storage';
 import { ROUTE_DEFINITIONS } from '../data/speedWallData';
 import { Language, TRANSLATIONS } from '../utils/i18n';
+
+export interface CategoryCalibration {
+  finishY: number; // percentage from top (e.g. 6% for 15m, 38% for U15/U13)
+  startY: number;  // percentage from top (e.g. 82%)
+}
+
+export const DEFAULT_CATEGORY_CALIBRATIONS: Record<RouteCategory, CategoryCalibration> = {
+  adults_15m: { finishY: 6, startY: 82 },
+  youth_u15: { finishY: 38, startY: 82 },
+  youth_u13: { finishY: 38, startY: 82 },
+};
+
+const CALIBRATION_STORAGE_KEY = 'fifteen_zone_calibrations_v2';
+
+const getStoredCalibrations = (): Record<RouteCategory, CategoryCalibration> => {
+  try {
+    const raw = localStorage.getItem(CALIBRATION_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return {
+        adults_15m: {
+          finishY: Number(parsed.adults_15m?.finishY ?? DEFAULT_CATEGORY_CALIBRATIONS.adults_15m.finishY),
+          startY: Number(parsed.adults_15m?.startY ?? DEFAULT_CATEGORY_CALIBRATIONS.adults_15m.startY),
+        },
+        youth_u15: {
+          finishY: Number(parsed.youth_u15?.finishY ?? DEFAULT_CATEGORY_CALIBRATIONS.youth_u15.finishY),
+          startY: Number(parsed.youth_u15?.startY ?? DEFAULT_CATEGORY_CALIBRATIONS.youth_u15.startY),
+        },
+        youth_u13: {
+          finishY: Number(parsed.youth_u13?.finishY ?? DEFAULT_CATEGORY_CALIBRATIONS.youth_u13.finishY),
+          startY: Number(parsed.youth_u13?.startY ?? DEFAULT_CATEGORY_CALIBRATIONS.youth_u13.startY),
+        },
+      };
+    }
+  } catch {
+    // fallback
+  }
+  return DEFAULT_CATEGORY_CALIBRATIONS;
+};
 
 interface SmartTimerProps {
   onRunFinished: (run: SpeedRun) => void;
@@ -82,11 +127,77 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const [showGuides, setShowGuides] = useState<boolean>(true);
   const [cameraFit, setCameraFit] = useState<'contain' | 'cover'>('contain');
 
-  // Discrete Calibrated Target Zones (Percentages)
-  const [wallPreset, setWallPreset] = useState<'standard_15m' | 'compact_10m'>('standard_15m');
+  // Per-category Target Zones (Start & Finish) with Manual Calibration
+  const [calibrations, setCalibrations] = useState<Record<RouteCategory, CategoryCalibration>>(getStoredCalibrations);
+  const [isCalibrating, setIsCalibrating] = useState<boolean>(false);
+  const [calibrationSavedToast, setCalibrationSavedToast] = useState<string | null>(null);
+
+  // Active zone coordinates dynamically derived from active category
+  const activeCalibration = calibrations[currentCategory] || DEFAULT_CATEGORY_CALIBRATIONS[currentCategory];
+  const finishZoneY = activeCalibration.finishY;
+  const startZoneY = activeCalibration.startY;
+
+  // Real-time Live Motion Feedback (for reliable AI motion detection & user visibility)
+  const [liveStartMotion, setLiveStartMotion] = useState<number>(0);
+  const [liveFinishMotion, setLiveFinishMotion] = useState<number>(0);
+  const [lastMotionTrigger, setLastMotionTrigger] = useState<'start' | 'finish' | null>(null);
+
+  // Sensitivity Presets: low = 6%, medium = 4%, high = 2.5% motion score
   const [sensitivityPreset, setSensitivityPreset] = useState<'low' | 'medium' | 'high'>('medium');
-  const startZoneY = wallPreset === 'standard_15m' ? 78 : 68;
-  const finishZoneY = wallPreset === 'standard_15m' ? 6 : 14;
+  const motionTriggerThreshold = sensitivityPreset === 'low' ? 6.0 : sensitivityPreset === 'high' ? 2.5 : 4.0;
+  const soundThreshold = sensitivityPreset === 'low' ? 75 : sensitivityPreset === 'high' ? 55 : 65;
+
+  const categoryName = lang === 'cs' ? routeDef.nameCs : lang === 'de' ? routeDef.nameDe : routeDef.nameEn;
+
+  // Calibration updater methods
+  const updateCalibration = (field: 'finishY' | 'startY', delta: number) => {
+    setCalibrations((prev) => {
+      const current = prev[currentCategory] || DEFAULT_CATEGORY_CALIBRATIONS[currentCategory];
+      const minVal = field === 'finishY' ? 2 : 55;
+      const maxVal = field === 'finishY' ? 65 : 95;
+      const newVal = Math.min(maxVal, Math.max(minVal, current[field] + delta));
+      const updated = {
+        ...prev,
+        [currentCategory]: {
+          ...current,
+          [field]: newVal,
+        },
+      };
+      try {
+        localStorage.setItem(CALIBRATION_STORAGE_KEY, JSON.stringify(updated));
+      } catch {
+        // ignore
+      }
+      return updated;
+    });
+  };
+
+  const resetCategoryCalibration = () => {
+    setCalibrations((prev) => {
+      const updated = {
+        ...prev,
+        [currentCategory]: { ...DEFAULT_CATEGORY_CALIBRATIONS[currentCategory] },
+      };
+      try {
+        localStorage.setItem(CALIBRATION_STORAGE_KEY, JSON.stringify(updated));
+      } catch {
+        // ignore
+      }
+      return updated;
+    });
+    setCalibrationSavedToast(`Obnoveno výchozí pro ${categoryName}`);
+    setTimeout(() => setCalibrationSavedToast(null), 2500);
+  };
+
+  const saveCalibrationExplicit = () => {
+    try {
+      localStorage.setItem(CALIBRATION_STORAGE_KEY, JSON.stringify(calibrations));
+      setCalibrationSavedToast(`Kalibrace pro ${categoryName} uložena!`);
+      setTimeout(() => setCalibrationSavedToast(null), 2500);
+    } catch {
+      // ignore
+    }
+  };
 
   // Mic & Sound Trigger
   const [micActive, setMicActive] = useState(false);
@@ -101,6 +212,8 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const rafRef = useRef<number | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const playbackVideoRef = useRef<HTMLVideoElement | null>(null);
+  const cameraContainerRef = useRef<HTMLDivElement | null>(null);
+  const lastMotionUpdateRef = useRef<number>(0);
 
   // Instant mounting callback ref for foolproof video stream attachment
   const setVideoElement = useCallback((element: HTMLVideoElement | null) => {
@@ -122,10 +235,6 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   // MediaRecorder refs
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
-
-  // Sensitivity mapped values
-  const motionThreshold = sensitivityPreset === 'low' ? 50 : sensitivityPreset === 'high' ? 25 : 35;
-  const soundThreshold = sensitivityPreset === 'low' ? 75 : sensitivityPreset === 'high' ? 55 : 65;
 
   // Start MediaRecorder
   const startMediaRecording = useCallback(() => {
@@ -385,6 +494,11 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         videoRef.current.srcObject = stream;
         videoRef.current.play().catch(() => {});
       }
+
+      // Smooth scroll viewport into view so climber can clearly see the active viewfinder
+      setTimeout(() => {
+        cameraContainerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 150);
     } catch {
       setCameraError('Kamera není dostupná nebo byl zamítnut přístup. Zkontrolujte oprávnění.');
       setCameraActive(false);
@@ -468,7 +582,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     setCountdownState('armed');
   };
 
-  // Main input loop: Motion detection & Sound trigger
+  // Main input loop: Precision ROI Motion Detection & Sound Trigger
   useEffect(() => {
     let intervalId: NodeJS.Timeout;
 
@@ -487,7 +601,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         }
       }
 
-      // 2. Camera Motion
+      // 2. Camera Motion with Category-calibrated ROIs
       if (cameraActive && videoRef.current && canvasRef.current) {
         const video = videoRef.current;
         const canvas = canvasRef.current;
@@ -495,7 +609,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
         if (ctx && video.readyState >= 2) {
           const W = 160;
-          const H = 120;
+          const H = 160;
           canvas.width = W;
           canvas.height = H;
           ctx.drawImage(video, 0, 0, W, H);
@@ -506,34 +620,75 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
             if (prevImageDataRef.current) {
               const prevData = prevImageDataRef.current;
-              let startDiff = 0;
-              let finishDiff = 0;
 
-              const startYMin = Math.floor((startZoneY / 100) * H);
-              const finishYMax = Math.floor(((finishZoneY + 18) / 100) * H);
+              // Horizontal climbing corridor (12% to 88% width to filter peripheral noise)
+              const xMin = Math.floor(W * 0.12);
+              const xMax = Math.floor(W * 0.88);
 
-              for (let i = 0; i < data.length; i += 8) {
-                const diff = Math.abs(data[i] - prevData[i]) + Math.abs(data[i + 1] - prevData[i + 1]);
-                if (diff > 45) {
-                  const pixelIndex = i / 4;
-                  const y = Math.floor(pixelIndex / W);
+              // Start ROI: startZoneY - 6% to startZoneY + 7%
+              const startYMin = Math.floor(Math.max(0, ((startZoneY - 6) / 100) * H));
+              const startYMax = Math.floor(Math.min(H - 1, ((startZoneY + 7) / 100) * H));
 
-                  if (y <= finishYMax) finishDiff++;
-                  if (y >= startYMin) startDiff++;
+              // Finish ROI: finishZoneY - 5% to finishZoneY + 6%
+              const finishYMin = Math.floor(Math.max(0, ((finishZoneY - 5) / 100) * H));
+              const finishYMax = Math.floor(Math.min(H - 1, ((finishZoneY + 6) / 100) * H));
+
+              let startTotal = 0;
+              let startChanged = 0;
+              let finishTotal = 0;
+              let finishChanged = 0;
+
+              for (let y = 0; y < H; y++) {
+                const inStartZone = y >= startYMin && y <= startYMax;
+                const inFinishZone = y >= finishYMin && y <= finishYMax;
+                if (!inStartZone && !inFinishZone) continue;
+
+                for (let x = xMin; x <= xMax; x++) {
+                  const idx = (y * W + x) * 4;
+                  // Color difference between frames
+                  const diff =
+                    Math.abs(data[idx] - prevData[idx]) +
+                    Math.abs(data[idx + 1] - prevData[idx + 1]) +
+                    Math.abs(data[idx + 2] - prevData[idx + 2]);
+
+                  if (inStartZone) {
+                    startTotal++;
+                    if (diff > 35) startChanged++;
+                  }
+
+                  if (inFinishZone) {
+                    finishTotal++;
+                    if (diff > 35) finishChanged++;
+                  }
                 }
               }
 
-              // Auto-Start on foot release
+              const startPct = startTotal > 0 ? (startChanged / startTotal) * 100 : 0;
+              const finishPct = finishTotal > 0 ? (finishChanged / finishTotal) * 100 : 0;
+
+              // Throttled UI activity meter update (every ~100ms)
+              const nowMs = performance.now();
+              if (nowMs - lastMotionUpdateRef.current > 100) {
+                lastMotionUpdateRef.current = nowMs;
+                setLiveStartMotion(Math.min(100, Math.round(startPct * 10) / 10));
+                setLiveFinishMotion(Math.min(100, Math.round(finishPct * 10) / 10));
+              }
+
+              // Auto-Start on foot release from start mat
               if (startMode === 'camera_motion' && !isRunning && countdownState === 'armed') {
-                if (startDiff > motionThreshold * 1.2) {
+                if (startPct >= motionTriggerThreshold) {
+                  setLastMotionTrigger('start');
+                  setTimeout(() => setLastMotionTrigger(null), 1200);
                   playIFSCStartTone();
-                  startTimerNow(0.138);
+                  startTimerNow(0.125);
                 }
               }
 
-              // Auto-Finish on top touch pad slap
-              if (isRunning && elapsedMs > 2400) {
-                if (finishDiff > motionThreshold * 1.5) {
+              // Auto-Finish on top touch pad slap (min 1500ms elapsed to prevent false finish right at start)
+              if (isRunning && elapsedMs > 1500) {
+                if (finishPct >= motionTriggerThreshold) {
+                  setLastMotionTrigger('finish');
+                  setTimeout(() => setLastMotionTrigger(null), 1200);
                   stopTimer();
                 }
               }
@@ -547,7 +702,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       }
     };
 
-    intervalId = setInterval(checkInputs, 50);
+    intervalId = setInterval(checkInputs, 40);
     return () => clearInterval(intervalId);
   }, [
     micActive,
@@ -556,7 +711,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     countdownState,
     startMode,
     soundThreshold,
-    motionThreshold,
+    motionTriggerThreshold,
     elapsedMs,
     startZoneY,
     finishZoneY,
@@ -698,14 +853,46 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
               <span className="hidden xs:inline">Zóny stěny</span>
             </button>
 
-            {/* Fit mode toggle: contain vs cover */}
+            {/* Manual Calibration Drawer Toggle */}
+            <button
+              onClick={() => setIsCalibrating(!isCalibrating)}
+              className={`min-h-[38px] px-2.5 sm:px-3 py-1 rounded-xl font-bold transition-all flex items-center gap-1 border ${
+                isCalibrating
+                  ? 'bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 border-red-300 dark:border-red-900'
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-transparent hover:bg-slate-200'
+              }`}
+              title="Ruční kalibrace startovní desky a cílového senzoru"
+            >
+              <Sliders className="w-3.5 h-3.5" />
+              <span>Kalibrace</span>
+            </button>
+
+            {/* Fit mode toggle: contain (tall speed wall) vs cover */}
             <button
               onClick={() => setCameraFit(cameraFit === 'contain' ? 'cover' : 'contain')}
-              className="min-h-[38px] px-2.5 sm:px-3 py-1 rounded-xl font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors flex items-center gap-1"
-              title={cameraFit === 'contain' ? 'Zobrazen celý záběr stěny (bez ořezu)' : 'Zobrazen vyplněný záběr'}
+              className={`min-h-[38px] px-2.5 sm:px-3 py-1 rounded-xl font-bold transition-all flex items-center gap-1 border ${
+                cameraFit === 'contain'
+                  ? 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 border-indigo-300 dark:border-indigo-800'
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-transparent hover:bg-slate-200'
+              }`}
+              title={cameraFit === 'contain' ? 'Zvětšené vysoké okno: zobrazen celý záběr stěny od země po cíl' : 'Výplň obrazovky (ořízne strany)'}
             >
               {cameraFit === 'contain' ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
-              <span className="hidden sm:inline">{cameraFit === 'contain' ? 'Celý záběr ↕' : 'Výplň'}</span>
+              <span>{cameraFit === 'contain' ? 'Celý záběr ↕' : 'Výplň'}</span>
+            </button>
+
+            {/* Sensitivity preset toggle */}
+            <button
+              onClick={() => {
+                const next = sensitivityPreset === 'medium' ? 'high' : sensitivityPreset === 'high' ? 'low' : 'medium';
+                setSensitivityPreset(next);
+              }}
+              className="min-h-[38px] px-2.5 sm:px-3 py-1 rounded-xl font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 transition-colors flex items-center gap-1"
+              title="Citlivost IA snímače pohybu (Střední 4%, Vysoká 2.5%, Nízká 6%)"
+            >
+              <Activity className="w-3.5 h-3.5 text-amber-500" />
+              <span className="hidden sm:inline">Citlivost:</span>
+              <span className="capitalize">{sensitivityPreset === 'medium' ? 'Stř.' : sensitivityPreset === 'high' ? 'Vys.' : 'Níz.'}</span>
             </button>
 
             {/* Auto video record toggle */}
@@ -718,7 +905,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
               }`}
             >
               <Video className="w-3.5 h-3.5" />
-              <span>{recordVideoOnRun ? 'Záznam: ZAP' : 'Záznam: VYP'}</span>
+              <span className="hidden xs:inline">{recordVideoOnRun ? 'Záznam: ZAP' : 'Záznam: VYP'}</span>
             </button>
 
             {/* Switch facing front/back */}
@@ -739,124 +926,325 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         </p>
       )}
 
+      {/* Manual Calibration Panel for Start & Top Target Zones */}
+      {cameraActive && isCalibrating && (
+        <div className="p-3.5 sm:p-4 rounded-2xl bg-white dark:bg-slate-900 border-2 border-red-500/40 shadow-lg space-y-3 animate-in fade-in">
+          <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
+            <div className="flex items-center gap-2">
+              <Sliders className="w-4 h-4 text-red-600" />
+              <span className="font-bold text-sm text-slate-900 dark:text-white">
+                Ruční kalibrace zón stěny: {categoryName} ({routeDef.heightMeters}m)
+              </span>
+            </div>
+            <button
+              onClick={() => setIsCalibrating(false)}
+              className="text-slate-500 hover:text-slate-900 dark:hover:text-white p-1 rounded-lg"
+              title="Zavřít kalibraci"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {/* Top / Finish Zone Calibration */}
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-red-500/30 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-red-600 dark:text-red-400 flex items-center gap-1.5">
+                  <span>🔴 Cíl / Horní senzor</span>
+                </span>
+                <span className="font-mono font-bold text-xs bg-red-500/15 text-red-600 dark:text-red-300 px-2 py-0.5 rounded">
+                  Výška: {finishZoneY}%
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => updateCalibration('finishY', -1)}
+                  className="flex-1 py-1.5 px-2 rounded-lg bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-xs font-bold flex items-center justify-center gap-1 text-slate-800 dark:text-slate-200 transition-colors"
+                >
+                  <ChevronUp className="w-4 h-4" />
+                  <span>Výše (-1%)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateCalibration('finishY', 1)}
+                  className="flex-1 py-1.5 px-2 rounded-lg bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-xs font-bold flex items-center justify-center gap-1 text-slate-800 dark:text-slate-200 transition-colors"
+                >
+                  <ChevronDown className="w-4 h-4" />
+                  <span>Níže (+1%)</span>
+                </button>
+              </div>
+              <input
+                type="range"
+                min={2}
+                max={60}
+                value={finishZoneY}
+                onChange={(e) => updateCalibration('finishY', Number(e.target.value) - finishZoneY)}
+                className="w-full accent-red-600 h-1.5 cursor-pointer"
+              />
+              <span className="text-[10px] text-slate-400 block">
+                {currentCategory === 'adults_15m'
+                  ? 'Výchozí pro dospělé: 6% (vrchol 15m stěny)'
+                  : 'Výchozí pro U15/U13: 38% (senzor 10m na panelu 7)'}
+              </span>
+            </div>
+
+            {/* Start Zone Calibration */}
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-emerald-500/30 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
+                  <span>🟢 Startovní deska (Noha)</span>
+                </span>
+                <span className="font-mono font-bold text-xs bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 px-2 py-0.5 rounded">
+                  Výška: {startZoneY}%
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => updateCalibration('startY', -1)}
+                  className="flex-1 py-1.5 px-2 rounded-lg bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-xs font-bold flex items-center justify-center gap-1 text-slate-800 dark:text-slate-200 transition-colors"
+                >
+                  <ChevronUp className="w-4 h-4" />
+                  <span>Výše (-1%)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateCalibration('startY', 1)}
+                  className="flex-1 py-1.5 px-2 rounded-lg bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-xs font-bold flex items-center justify-center gap-1 text-slate-800 dark:text-slate-200 transition-colors"
+                >
+                  <ChevronDown className="w-4 h-4" />
+                  <span>Níže (+1%)</span>
+                </button>
+              </div>
+              <input
+                type="range"
+                min={60}
+                max={95}
+                value={startZoneY}
+                onChange={(e) => updateCalibration('startY', Number(e.target.value) - startZoneY)}
+                className="w-full accent-emerald-600 h-1.5 cursor-pointer"
+              />
+              <span className="text-[10px] text-slate-400 block">
+                Zóna odrazové nohy lezce na startovní podložce (výchozí: 82%)
+              </span>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-xs">
+            <button
+              type="button"
+              onClick={resetCategoryCalibration}
+              className="text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 underline font-medium"
+            >
+              Obnovit výchozí pro {categoryName}
+            </button>
+            <button
+              type="button"
+              onClick={saveCalibrationExplicit}
+              className="px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold flex items-center gap-1.5 shadow-sm transition-colors"
+            >
+              <Check className="w-3.5 h-3.5" />
+              <span>Uložit kalibraci pro {categoryName}</span>
+            </button>
+          </div>
+
+          {calibrationSavedToast && (
+            <div className="p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-xs font-bold text-center">
+              {calibrationSavedToast}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Main Screen: Active Camera Viewport OR Clean Athletic Digital Card */}
       {cameraActive ? (
-        /* ACTIVE CAMERA HUD VIEWPORT WITH CRYSTAL-CLEAR POSITIONING */
-        <div className="relative rounded-3xl bg-black border-2 border-slate-800 shadow-2xl overflow-hidden aspect-[4/3] sm:aspect-video flex items-center justify-center select-none group">
-          <video
-            ref={setVideoElement}
-            playsInline
-            muted
-            autoPlay
-            className={`w-full h-full transition-all duration-200 ${
-              cameraFit === 'contain' ? 'object-contain bg-black' : 'object-cover'
+        <div ref={cameraContainerRef} className="space-y-2">
+          {/* Status Bar OUTSIDE the video frame so image is 100% unobstructed */}
+          <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-2xl bg-slate-900 border border-slate-800 text-xs">
+            <div className="flex items-center gap-2">
+              {isRecording ? (
+                <div className="px-2.5 py-1 rounded-full bg-red-600 text-white font-mono font-black text-xs uppercase flex items-center gap-1.5 shadow-sm animate-pulse">
+                  <span className="w-2 h-2 rounded-full bg-white animate-ping" />
+                  <span>REC {(elapsedMs / 1000).toFixed(1)}s</span>
+                </div>
+              ) : (
+                <div className="px-2.5 py-1 rounded-full bg-slate-800 text-emerald-400 font-mono text-[11px] font-bold border border-emerald-500/30 flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span>HLEDÁČEK ({facingMode === 'environment' ? 'Zadní kamera' : 'Přední'})</span>
+                </div>
+              )}
+
+              {isFalseStart && (
+                <div className="px-2.5 py-1 bg-red-600 text-white font-black text-xs uppercase rounded-full shadow-sm animate-bounce">
+                  ULILÝ START!
+                </div>
+              )}
+
+              <span className="text-slate-400 text-[11px] font-medium hidden sm:inline">
+                {categoryName} ({routeDef.heightMeters}m)
+              </span>
+            </div>
+
+            {/* Real-time Live IA Motion Detection Activity Meters */}
+            <div className="flex items-center gap-2 text-[11px] font-mono">
+              <div
+                className={`px-2 py-0.5 rounded-lg border flex items-center gap-1.5 transition-all ${
+                  liveStartMotion >= motionTriggerThreshold || lastMotionTrigger === 'start'
+                    ? 'bg-emerald-500/30 border-emerald-400 text-emerald-300 font-bold animate-pulse'
+                    : 'bg-slate-950 border-slate-800 text-slate-400'
+                }`}
+                title="Pohyb ve startovní zóně (práh pro start: ≥4%)"
+              >
+                <span className="text-[10px] font-sans text-slate-300">Start:</span>
+                <span>{liveStartMotion}%</span>
+              </div>
+
+              <div
+                className={`px-2 py-0.5 rounded-lg border flex items-center gap-1.5 transition-all ${
+                  liveFinishMotion >= motionTriggerThreshold || lastMotionTrigger === 'finish'
+                    ? 'bg-red-500/30 border-red-400 text-red-300 font-bold animate-pulse'
+                    : 'bg-slate-950 border-slate-800 text-slate-400'
+                }`}
+                title="Pohyb v cílové zóně dohmatu (práh pro cíl: ≥4%)"
+              >
+                <span className="text-[10px] font-sans text-slate-300">Cíl:</span>
+                <span>{liveFinishMotion}%</span>
+              </div>
+
+              {!isRunning && elapsedMs === 0 && (
+                <div className="px-2.5 py-0.5 rounded-lg bg-black text-white font-mono font-bold text-xs border border-white/20">
+                  00.000s
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ACTIVE CAMERA HUD VIEWPORT – Expands vertically for "Celý záběr" mode */}
+          <div
+            className={`relative rounded-3xl bg-black border-2 border-slate-800 shadow-2xl overflow-hidden flex items-center justify-center select-none transition-all duration-300 group ${
+              cameraFit === 'contain'
+                ? 'w-full h-[68vh] min-h-[520px] max-h-[820px]'
+                : 'w-full aspect-[4/3] sm:aspect-video'
             }`}
-          />
-          <canvas ref={canvasRef} className="hidden" />
+          >
+            <video
+              ref={setVideoElement}
+              playsInline
+              muted
+              autoPlay
+              className={`w-full h-full transition-all duration-200 ${
+                cameraFit === 'contain' ? 'object-contain bg-black' : 'object-cover'
+              }`}
+            />
+            <canvas ref={canvasRef} className="hidden" />
 
-          {/* Top Status & Viewfinder Bar */}
-          <div className="absolute top-3 left-3 right-3 flex items-center justify-between z-20 pointer-events-none">
-            {isRecording ? (
-              <div className="px-3 py-1 rounded-full bg-red-600 text-white font-mono font-black text-xs uppercase tracking-wider flex items-center gap-1.5 shadow-lg animate-pulse">
-                <span className="w-2.5 h-2.5 rounded-full bg-white animate-ping" />
-                <span>REC</span>
-                <span>{(elapsedMs / 1000).toFixed(1)}s</span>
-              </div>
-            ) : (
-              <div className="px-2.5 py-1 rounded-full bg-black/70 backdrop-blur-md text-white font-mono text-[11px] font-bold border border-white/20 flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                <span>LIVE HLEDÁČEK ({facingMode === 'environment' ? 'Zadní kamera' : 'Přední'})</span>
+            {/* Dynamic Category Guidelines (Thin non-intrusive dashed lines without covering pads) */}
+            {showGuides && (
+              <div className="absolute inset-0 pointer-events-none z-10">
+                {/* Center vertical line to help straighten camera */}
+                <div className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2 w-px border-l border-dashed border-white/20" />
+
+                {/* 🔴 Finish Target Zone */}
+                <div
+                  style={{ top: `${finishZoneY}%`, height: '11%' }}
+                  className={`absolute left-3 right-3 border-2 border-dashed rounded-xl flex items-center justify-between px-3 text-[11px] font-bold shadow-sm transition-all ${
+                    liveFinishMotion >= motionTriggerThreshold || lastMotionTrigger === 'finish'
+                      ? 'border-red-400 bg-red-500/30 text-white ring-2 ring-red-400'
+                      : 'border-red-500/80 bg-red-500/10 text-red-200'
+                  }`}
+                >
+                  <span className="flex items-center gap-1.5">
+                    <span>🔴</span>
+                    <span>
+                      {currentCategory === 'adults_15m'
+                        ? 'Cíl 15m (Dohmat)'
+                        : `Cíl ${categoryName} (Senzor 10m – Panel 7)`}
+                    </span>
+                  </span>
+                  <span className="text-[10px] font-mono opacity-90 bg-black/60 px-1.5 py-0.5 rounded border border-white/10">
+                    Y: {finishZoneY}%
+                  </span>
+                </div>
+
+                {/* 🟡 10m Split Gate (Only for Adults 15m route) */}
+                {currentCategory === 'adults_15m' && (
+                  <div
+                    style={{ top: '36%' }}
+                    className="absolute left-6 right-6 border-t border-dashed border-amber-400/80 flex items-center justify-between px-2 pt-0.5 text-[10px] font-bold text-amber-300"
+                  >
+                    <span>🟡 Mezičas 10m (Brána 2)</span>
+                  </div>
+                )}
+
+                {/* 🔵 5m Split Gate */}
+                <div
+                  style={{ top: '62%' }}
+                  className="absolute left-6 right-6 border-t border-dashed border-blue-400/80 flex items-center justify-between px-2 pt-0.5 text-[10px] font-bold text-blue-300"
+                >
+                  <span>🔵 Mezičas 5m (První brána)</span>
+                </div>
+
+                {/* 🟢 Start Mat Zone: Foot on Start Pad */}
+                <div
+                  style={{ top: `${startZoneY}%`, height: '12%' }}
+                  className={`absolute left-3 right-3 border-2 border-dashed rounded-xl flex items-center justify-between px-3 text-[11px] font-bold shadow-sm transition-all ${
+                    liveStartMotion >= motionTriggerThreshold || lastMotionTrigger === 'start'
+                      ? 'border-emerald-400 bg-emerald-500/30 text-white ring-2 ring-emerald-400'
+                      : 'border-emerald-400/80 bg-emerald-500/10 text-emerald-200'
+                  }`}
+                >
+                  <span className="flex items-center gap-1.5">
+                    <span>🟢</span>
+                    <span>Startovní podložka (Odraz nohy)</span>
+                  </span>
+                  <span className="text-[10px] font-mono opacity-90 bg-black/60 px-1.5 py-0.5 rounded border border-white/10">
+                    Y: {startZoneY}%
+                  </span>
+                </div>
               </div>
             )}
 
-            {isFalseStart && (
-              <div className="px-3 py-1 bg-red-600 text-white font-black text-xs uppercase rounded-full shadow-lg animate-bounce">
-                ULILÝ START!
-              </div>
-            )}
+            {/* High-visibility Chrono Overlay during active climb or countdown */}
+            {(isRunning || elapsedMs > 0 || countdownState !== 'idle') && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none p-4 z-20">
+                {countdownState === 'armed' && (
+                  <div className="mb-2 px-4 py-1.5 bg-emerald-500/90 text-white font-black text-xs uppercase tracking-wider rounded-full shadow-lg animate-pulse">
+                    ČEKÁ SE NA ODRAZ Z PODLOŽKY (ZÓNA {startZoneY}%)
+                  </div>
+                )}
 
-            {/* Non-intrusive floating chrono badge when IDLE so screen is 100% CLEAR for camera positioning! */}
-            {!isRunning && elapsedMs === 0 && (
-              <div className="px-3.5 py-1 rounded-xl bg-black/80 backdrop-blur-md border border-white/25 text-white font-mono font-black text-sm sm:text-base shadow-xl">
-                00.000s
+                {countdownState !== 'idle' && countdownState !== 'started' && countdownState !== 'armed' && (
+                  <div className="mb-2 px-4 py-1 bg-amber-500 text-slate-950 font-black text-xs uppercase tracking-widest rounded-full shadow-lg">
+                    {countdownState === 'marks' && 'NA MÍSTA'}
+                    {countdownState === 'ready' && 'PŘIPRAVIT SE'}
+                    {countdownState === 'beeps' && 'ODPOČET...'}
+                  </div>
+                )}
+
+                <div className="font-mono tabular-nums text-6xl sm:text-8xl md:text-9xl font-black text-white drop-shadow-[0_4px_30px_rgba(0,0,0,0.95)] tracking-tight">
+                  {formatChrono(elapsedMs)}
+                </div>
               </div>
             )}
           </div>
 
-          {/* Guidelines for 15m Wall: Finish touch pad, 10m gate, 5m gate, and Start mat */}
-          {showGuides && (
-            <div className="absolute inset-0 pointer-events-none z-10">
-              {/* Vertical alignment centerline for straightening tripod / phone */}
-              <div className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2 w-px border-l border-dashed border-white/25" />
-
-              {/* 🔴 Finish Target Zone: 15m Finish Pad */}
-              <div
-                style={{ top: `${finishZoneY}%`, height: '14%' }}
-                className="absolute left-3 right-3 border-2 border-dashed border-red-500/90 bg-red-500/15 rounded-xl flex items-center justify-between px-3 text-[11px] font-bold text-red-100 shadow-sm"
-              >
-                <span>🔴 Cíl (Dohmat 15m)</span>
-                <span className="text-[10px] font-mono opacity-80">Vrchol stěny</span>
-              </div>
-
-              {/* 🟡 10m Split Gate (U15) */}
-              <div
-                style={{ top: '38%' }}
-                className="absolute left-6 right-6 border-t border-dashed border-amber-400/80 flex items-center justify-between px-2 pt-0.5 text-[10px] font-bold text-amber-300"
-              >
-                <span>🟡 Mezičas 10m (Brána U15)</span>
-              </div>
-
-              {/* 🔵 5m Split Gate */}
-              <div
-                style={{ top: '62%' }}
-                className="absolute left-6 right-6 border-t border-dashed border-blue-400/80 flex items-center justify-between px-2 pt-0.5 text-[10px] font-bold text-blue-300"
-              >
-                <span>🔵 Mezičas 5m (První brána)</span>
-              </div>
-
-              {/* 🟢 Start Mat Zone: Foot on Start Pad */}
-              <div
-                style={{ top: `${startZoneY}%`, height: '15%' }}
-                className="absolute left-3 right-3 border-2 border-dashed border-emerald-400/90 bg-emerald-500/15 rounded-xl flex items-center justify-between px-3 text-[11px] font-bold text-emerald-100 shadow-sm"
-              >
-                <span>🟢 Startovní podložka (Noha)</span>
-                <span className="text-[10px] font-mono opacity-80">Základna</span>
-              </div>
+          {/* Positioning Helper Instruction Banner OUTSIDE the video frame */}
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-2 p-3 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-300">
+            <div className="flex items-center gap-2">
+              <Target className="w-4 h-4 text-emerald-500 shrink-0" />
+              <span>
+                Namiřte kameru: startovní deska dole v zelené zóně ({startZoneY}%), cíl v červené zóně ({finishZoneY}%) pro {categoryName}.
+              </span>
             </div>
-          )}
-
-          {/* Positioning Helper Instruction Banner when Idle */}
-          {!isRunning && elapsedMs === 0 && (
-            <div className="absolute bottom-3 left-3 right-3 flex items-center justify-center pointer-events-none z-20">
-              <div className="px-3.5 py-1.5 rounded-full bg-black/80 backdrop-blur-md border border-white/20 text-white text-xs font-bold shadow-xl flex items-center gap-1.5 text-center">
-                <Target className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                <span>Namiřte kameru: startovní deska dole (zelená) a cíl nahoře (červená)</span>
-              </div>
-            </div>
-          )}
-
-          {/* Chrono Display during active climb or countdown */}
-          {(isRunning || elapsedMs > 0 || countdownState !== 'idle') && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none p-4 z-20">
-              {countdownState === 'armed' && (
-                <div className="mb-2 px-4 py-1.5 bg-emerald-500/90 text-white font-black text-xs uppercase tracking-wider rounded-full shadow-lg animate-pulse">
-                  ČEKÁ SE NA ODRAZ Z PODLOŽKY
-                </div>
+            <div className="text-[11px] text-slate-500 dark:text-slate-400 shrink-0">
+              {startMode === 'camera_motion' ? (
+                <span className="text-emerald-600 dark:text-emerald-400 font-bold">● IA hlídání odrazu a dohmatu připraveno</span>
+              ) : (
+                <span>Přepněte na režim Kamera pro IA auto-start</span>
               )}
-
-              {countdownState !== 'idle' && countdownState !== 'started' && countdownState !== 'armed' && (
-                <div className="mb-2 px-4 py-1 bg-amber-500 text-slate-950 font-black text-xs uppercase tracking-widest rounded-full shadow-lg">
-                  {countdownState === 'marks' && 'NA MÍSTA'}
-                  {countdownState === 'ready' && 'PŘIPRAVIT SE'}
-                  {countdownState === 'beeps' && 'ODPOČET...'}
-                </div>
-              )}
-
-              <div className="font-mono tabular-nums text-6xl sm:text-8xl md:text-9xl font-black text-white drop-shadow-[0_4px_30px_rgba(0,0,0,0.95)] tracking-tight">
-                {formatChrono(elapsedMs)}
-              </div>
             </div>
-          )}
+          </div>
         </div>
       ) : (
         /* SLEEK DIGITAL CHRONO CARD */
@@ -944,7 +1332,9 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
               : 'bg-slate-900/40 border-slate-800 text-slate-600'
           }`}
         >
-          <span className="text-[10px] font-bold text-slate-400">DOHMAT (15m)</span>
+          <span className="text-[10px] font-bold text-slate-400">
+            DOHMAT ({routeDef.heightMeters.toFixed(0)}m)
+          </span>
           <span className="text-base font-mono font-bold">
             {isRunning ? 'STOP!' : '—'}
           </span>
