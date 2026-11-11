@@ -16,8 +16,9 @@ import { AiAnalysisModal } from './components/AiAnalysisModal';
 import { CloudSyncModal } from './components/CloudSyncModal';
 import { LegalModal } from './components/LegalModal';
 import { SettingsModal } from './components/SettingsModal';
+import { AuthModal } from './components/AuthModal';
 import { RouteCategory, SpeedRun } from './types/climbing';
-import { getStoredRuns, getUserProfile } from './utils/storage';
+import { getStoredRuns, getUserProfile, UserProfile } from './utils/storage';
 import { Language, getStoredLanguage, saveStoredLanguage, TRANSLATIONS } from './utils/i18n';
 
 export default function App() {
@@ -27,12 +28,14 @@ export default function App() {
   const [currentCategory, setCurrentCategory] = useState<RouteCategory>('adults_15m');
   const [runs, setRuns] = useState<SpeedRun[]>([]);
   const [currentSelectedRun, setCurrentSelectedRun] = useState<SpeedRun | null>(null);
+  const [profile, setProfile] = useState<UserProfile>(getUserProfile());
 
   // Modals
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [showLogbook, setShowLogbook] = useState<boolean>(false);
   const [showCloudSync, setShowCloudSync] = useState<boolean>(false);
   const [showLegal, setShowLegal] = useState<boolean>(false);
+  const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
   const [analyzingRun, setAnalyzingRun] = useState<SpeedRun | null>(null);
 
   const t = TRANSLATIONS[lang];
@@ -60,6 +63,7 @@ export default function App() {
     const updated = [newRun, ...runs.filter((r) => r.id !== newRun.id)];
     setRuns(updated);
     setCurrentSelectedRun(newRun);
+    setProfile(getUserProfile());
   };
 
   const handleOpenAiAnalysis = (run: SpeedRun) => {
@@ -74,6 +78,17 @@ export default function App() {
     }
   };
 
+  const handleRunsChanged = (updatedRuns: SpeedRun[]) => {
+    setRuns(updatedRuns);
+    if (updatedRuns.length > 0) {
+      if (!currentSelectedRun || !updatedRuns.some((r) => r.id === currentSelectedRun.id)) {
+        setCurrentSelectedRun(updatedRuns[0]);
+      }
+    } else {
+      setCurrentSelectedRun(null);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors duration-200 w-full max-w-full overflow-x-hidden">
       {/* Strict 3-zone Top Bar Contract */}
@@ -82,6 +97,8 @@ export default function App() {
         setActiveTab={setActiveTab}
         onOpenLogbook={() => setShowLogbook(true)}
         onOpenSettings={() => setShowSettings(true)}
+        onOpenAuth={() => setShowAuthModal(true)}
+        userProfile={profile}
         currentCategory={currentCategory}
         onSelectCategory={setCurrentCategory}
         lang={lang}
@@ -96,6 +113,11 @@ export default function App() {
             currentCategory={currentCategory}
             onSelectCategory={setCurrentCategory}
             lang={lang}
+            userProfile={profile}
+            onDeleteRun={(runId) => {
+              const updated = runs.filter((r) => r.id !== runId);
+              handleRunsChanged(updated);
+            }}
           />
         )}
 
@@ -114,13 +136,21 @@ export default function App() {
 
         {activeTab === 'training' && <TrainingRoutines lang={lang} />}
 
-        {activeTab === 'leaderboard' && <Leaderboards lang={lang} />}
+        {activeTab === 'leaderboard' && (
+          <Leaderboards
+            lang={lang}
+            runs={runs}
+            onRunsChanged={handleRunsChanged}
+            userProfile={profile}
+            onOpenAuth={() => setShowAuthModal(true)}
+          />
+        )}
       </main>
 
       {/* Ergonomic Mobile Bottom Tab Bar */}
       <BottomTabBar activeTab={activeTab} setActiveTab={setActiveTab} lang={lang} />
 
-      {/* Session Logbook Modal */}
+      {/* Session Logbook Modal with Single & Bulk Deletions */}
       {showLogbook && (
         <LogbookModal
           runs={runs}
@@ -129,12 +159,7 @@ export default function App() {
             setCurrentSelectedRun(run);
             setActiveTab('splits');
           }}
-          onRunsChanged={(updatedRuns) => {
-            setRuns(updatedRuns);
-            if (updatedRuns.length > 0) {
-              setCurrentSelectedRun(updatedRuns[0]);
-            }
-          }}
+          onRunsChanged={handleRunsChanged}
           lang={lang}
         />
       )}
@@ -145,6 +170,22 @@ export default function App() {
           run={analyzingRun}
           onClose={() => setAnalyzingRun(null)}
           onRunUpdated={handleRunUpdated}
+        />
+      )}
+
+      {/* Athlete Authentication & Nationality Modal */}
+      {showAuthModal && (
+        <AuthModal
+          onClose={() => {
+            setShowAuthModal(false);
+            setProfile(getUserProfile());
+            setRuns(getStoredRuns());
+          }}
+          onProfileUpdated={(updatedProfile) => {
+            setProfile(updatedProfile);
+          }}
+          onRunsChanged={handleRunsChanged}
+          lang={lang}
         />
       )}
 
@@ -164,7 +205,7 @@ export default function App() {
         />
       )}
 
-      {/* Unified Settings Modal (Language, Theme, Audio tones, Cloud, Legal) */}
+      {/* Unified Settings Modal (Language, Theme, Audio tones, Athlete Profile, Cloud, Legal) */}
       {showSettings && (
         <SettingsModal
           onClose={() => setShowSettings(false)}
@@ -174,6 +215,11 @@ export default function App() {
           setIsDark={setIsDark}
           onOpenCloudSync={() => setShowCloudSync(true)}
           onOpenLegal={() => setShowLegal(true)}
+          onOpenAuth={() => {
+            setShowSettings(false);
+            setShowAuthModal(true);
+          }}
+          userProfile={profile}
         />
       )}
     </div>

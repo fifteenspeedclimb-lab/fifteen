@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Cloud, Lock, CheckCircle2, ShieldCheck, HardDrive, Smartphone, AlertCircle, LogOut } from 'lucide-react';
 import { CloudStorageConfig } from '../types/climbing';
 import { Language, TRANSLATIONS } from '../utils/i18n';
+import { getUserProfile } from '../utils/storage';
 
 interface CloudSyncModalProps {
   onClose: () => void;
@@ -12,20 +13,29 @@ const STORAGE_CONFIG_KEY = 'fifteen_cloud_config_v1';
 
 export const CloudSyncModal: React.FC<CloudSyncModalProps> = ({ onClose, lang }) => {
   const t = TRANSLATIONS[lang];
+  const profile = getUserProfile();
 
   // Load saved config or defaults
   const [config, setConfig] = useState<CloudStorageConfig>(() => {
     try {
       const raw = localStorage.getItem(STORAGE_CONFIG_KEY);
-      if (raw) return JSON.parse(raw);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed.userName === 'Alex Novák' || parsed.userEmail === 'fifteen.speedclimb@gmail.com') {
+          parsed.userName = profile.name || undefined;
+          parsed.userEmail = profile.email || undefined;
+          parsed.isSignedIn = !!profile.email;
+        }
+        return parsed;
+      }
     } catch {
       // ignore
     }
     return {
       provider: 'gdrive',
-      isSignedIn: true,
-      userEmail: 'fifteen.speedclimb@gmail.com',
-      userName: 'Alex Novák',
+      isSignedIn: !!profile.email,
+      userEmail: profile.email || undefined,
+      userName: profile.name || undefined,
       autoUpload: true,
       targetFolder: 'Fifteen_Climbs_15m',
       parentalConsentApproved: true,
@@ -49,12 +59,13 @@ export const CloudSyncModal: React.FC<CloudSyncModalProps> = ({ onClose, lang })
     setFeedbackMsg(null);
 
     setTimeout(() => {
+      const currentProf = getUserProfile();
       const updated: CloudStorageConfig = {
         ...config,
         provider,
         isSignedIn: true,
-        userEmail: 'fifteen.speedclimb@gmail.com',
-        userName: 'Alex Novák',
+        userEmail: currentProf.email || 'athlete@climbing.cz',
+        userName: currentProf.name || (lang === 'cs' ? 'Můj profil' : 'My Profile'),
       };
       saveConfig(updated);
       setSimulatingAuth(false);

@@ -5,7 +5,7 @@ import { WORLD_RECORDS, SECTION_METRICS } from '../data/speedWallData';
 import { Language, TRANSLATIONS } from '../utils/i18n';
 
 interface SplitAnalysisProps {
-  currentRun: SpeedRun;
+  currentRun?: SpeedRun | null;
   allRuns: SpeedRun[];
   onSelectRun: (run: SpeedRun) => void;
   onOpenAiAnalysis: (run: SpeedRun) => void;
@@ -22,6 +22,27 @@ export const SplitAnalysis: React.FC<SplitAnalysisProps> = ({
   currentCategory = 'adults_15m',
 }) => {
   const t = TRANSLATIONS[lang];
+
+  if (!currentRun) {
+    return (
+      <div className="max-w-4xl mx-auto px-4 py-16 text-center space-y-4 animate-in fade-in">
+        <div className="w-16 h-16 rounded-3xl bg-red-50 dark:bg-red-950/60 text-red-600 flex items-center justify-center mx-auto border border-red-200 dark:border-red-900 shadow-sm">
+          <Activity className="w-8 h-8" />
+        </div>
+        <div className="space-y-1.5 max-w-md mx-auto">
+          <h2 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
+            {lang === 'cs' ? 'Zatím žádné pokusy pro rozbor' : 'No runs available for analysis'}
+          </h2>
+          <p className="text-xs sm:text-sm text-slate-500">
+            {lang === 'cs'
+              ? 'Spusťte a dokončete měření v záložce Časomíra. Zaznamenaný výlez se zde automaticky zobrazí pro detailní rozbor mezičasů 0–5m, 5–10m a 10–15m.'
+              : 'Complete a run in the Timer tab. Your climb will automatically appear here for split-time analysis.'}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   const isYouth = currentCategory === 'youth_u13' || currentCategory === 'youth_u15' || currentRun.routeCategory === 'youth_u13' || currentRun.routeCategory === 'youth_u15';
   const wallHeight = isYouth ? 10 : 15;
   const [selectedRecordId, setSelectedRecordId] = useState<string>('sam-watson');

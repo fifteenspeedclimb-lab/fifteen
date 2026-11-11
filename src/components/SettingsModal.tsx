@@ -10,6 +10,8 @@ import {
 } from '../utils/audio';
 import { FifteenAppIcon } from './FifteenLogo';
 
+import { UserProfile, getUserProfile } from '../utils/storage';
+
 interface SettingsModalProps {
   onClose: () => void;
   lang: Language;
@@ -18,6 +20,8 @@ interface SettingsModalProps {
   setIsDark: (dark: boolean) => void;
   onOpenCloudSync: () => void;
   onOpenLegal: () => void;
+  onOpenAuth: () => void;
+  userProfile?: UserProfile;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -28,7 +32,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   setIsDark,
   onOpenCloudSync,
   onOpenLegal,
+  onOpenAuth,
+  userProfile,
 }) => {
+  const [profile] = useState<UserProfile>(userProfile || getUserProfile);
   const [audioSettings, setAudioSettings] = useState(getStoredAudioSettings());
   const [isPlayingTest, setIsPlayingTest] = useState(false);
 
@@ -78,6 +85,36 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             className="w-8 h-8 rounded-full flex items-center justify-center text-slate-400 hover:text-slate-900 dark:hover:text-white text-base font-bold"
           >
             ✕
+          </button>
+        </div>
+
+        {/* 0. Athlete Profile & Nationality Card */}
+        <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <div className="w-10 h-10 rounded-xl bg-red-600/10 text-red-600 dark:text-red-400 flex items-center justify-center font-bold text-lg border border-red-500/20">
+              {profile.flagEmoji || '🇨🇿'}
+            </div>
+            <div>
+              <div className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
+                <span>{profile.name || (lang === 'cs' ? 'Nenastavený profil lezce' : 'Profile not set')}</span>
+                <span className="text-[10px] px-1.5 py-0.2 rounded font-mono font-bold bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+                  {profile.nationalityCode || 'CZE'}
+                </span>
+              </div>
+              <div className="text-[11px] text-slate-500">
+                {profile.homeGym ? `${profile.homeGym} · ` : ''}{profile.nationality || 'Česká republika'}
+              </div>
+            </div>
+          </div>
+
+          <button
+            onClick={() => {
+              onClose();
+              onOpenAuth();
+            }}
+            className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm shrink-0"
+          >
+            {profile.isAuthenticated ? 'Upravit profil' : 'Přihlásit se'}
           </button>
         </div>
 

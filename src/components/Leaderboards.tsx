@@ -1,21 +1,22 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Trophy,
-  MapPin,
   Plus,
   CheckCircle2,
   Calendar as CalendarIcon,
   TrendingUp,
-  BarChart3,
   Download,
-  Filter,
-  Sparkles,
+  Trash2,
   ChevronLeft,
   ChevronRight,
   Flame,
-  Award
+  Award,
+  User,
+  Zap,
+  Clock,
+  AlertTriangle
 } from 'lucide-react';
-import { getUserProfile, getStoredRuns, saveRun } from '../utils/storage';
+import { getUserProfile, getStoredRuns, saveRun, deleteRun, clearDemoRuns, clearAllRuns, UserProfile } from '../utils/storage';
 import { Language, TRANSLATIONS } from '../utils/i18n';
 import { SpeedRun } from '../types/climbing';
 
@@ -25,6 +26,7 @@ interface LeaderboardEntry {
   climberName: string;
   country: string;
   countryCode: string;
+  flagEmoji?: string;
   gender: 'men' | 'women';
   category: 'adults_15m' | 'youth_u15' | 'youth_u13';
   totalTime: number;
@@ -33,6 +35,7 @@ interface LeaderboardEntry {
   event: string;
   date: string;
   isVerified: boolean;
+  isUser?: boolean;
 }
 
 const GLOBAL_IFSC_RECORDS: LeaderboardEntry[] = [
@@ -40,8 +43,9 @@ const GLOBAL_IFSC_RECORDS: LeaderboardEntry[] = [
     id: 'rec-1',
     rank: 1,
     climberName: 'Sam Watson',
-    country: 'United States',
+    country: 'Spojené státy americké',
     countryCode: 'USA',
+    flagEmoji: '🇺🇸',
     gender: 'men',
     category: 'adults_15m',
     totalTime: 4.74,
@@ -55,8 +59,9 @@ const GLOBAL_IFSC_RECORDS: LeaderboardEntry[] = [
     id: 'rec-2',
     rank: 2,
     climberName: 'Veddriq Leonardo',
-    country: 'Indonesia',
+    country: 'Indonésie',
     countryCode: 'INA',
+    flagEmoji: '🇮🇩',
     gender: 'men',
     category: 'adults_15m',
     totalTime: 4.75,
@@ -70,8 +75,9 @@ const GLOBAL_IFSC_RECORDS: LeaderboardEntry[] = [
     id: 'rec-3',
     rank: 3,
     climberName: 'Wu Peng',
-    country: 'China',
+    country: 'Čína',
     countryCode: 'CHN',
+    flagEmoji: '🇨🇳',
     gender: 'men',
     category: 'adults_15m',
     totalTime: 4.77,
@@ -85,8 +91,9 @@ const GLOBAL_IFSC_RECORDS: LeaderboardEntry[] = [
     id: 'rec-4',
     rank: 4,
     climberName: 'Matteo Zurloni',
-    country: 'Italy',
+    country: 'Itálie',
     countryCode: 'ITA',
+    flagEmoji: '🇮🇹',
     gender: 'men',
     category: 'adults_15m',
     totalTime: 4.95,
@@ -97,26 +104,12 @@ const GLOBAL_IFSC_RECORDS: LeaderboardEntry[] = [
     isVerified: true,
   },
   {
-    id: 'rec-5',
-    rank: 5,
-    climberName: 'Alex Novák (Vy)',
-    country: 'Czech Republic',
-    countryCode: 'CZE',
-    gender: 'men',
-    category: 'adults_15m',
-    totalTime: 5.642,
-    splits: { split1: 1.78, split2: 1.94, split3: 1.92 },
-    gym: 'Big Wall Praha (15m)',
-    event: 'Trénink s aplikací Fifteen',
-    date: '2026-11-06',
-    isVerified: true,
-  },
-  {
     id: 'rec-6',
-    rank: 6,
+    rank: 5,
     climberName: 'Jan Kříž',
-    country: 'Czech Republic',
+    country: 'Česká republika',
     countryCode: 'CZE',
+    flagEmoji: '🇨🇿',
     gender: 'men',
     category: 'adults_15m',
     totalTime: 5.48,
@@ -128,10 +121,11 @@ const GLOBAL_IFSC_RECORDS: LeaderboardEntry[] = [
   },
   {
     id: 'rec-7',
-    rank: 7,
+    rank: 6,
     climberName: 'Julian David',
-    country: 'New Zealand',
+    country: 'Nový Zéland',
     countryCode: 'NZL',
+    flagEmoji: '🇳🇿',
     gender: 'men',
     category: 'adults_15m',
     totalTime: 5.20,
@@ -146,8 +140,9 @@ const GLOBAL_IFSC_RECORDS: LeaderboardEntry[] = [
     id: 'rec-w1',
     rank: 1,
     climberName: 'Aleksandra Mirosław',
-    country: 'Poland',
+    country: 'Polsko',
     countryCode: 'POL',
+    flagEmoji: '🇵🇱',
     gender: 'women',
     category: 'adults_15m',
     totalTime: 6.06,
@@ -161,8 +156,9 @@ const GLOBAL_IFSC_RECORDS: LeaderboardEntry[] = [
     id: 'rec-w2',
     rank: 2,
     climberName: 'Deng Lijuan',
-    country: 'China',
+    country: 'Čína',
     countryCode: 'CHN',
+    flagEmoji: '🇨🇳',
     gender: 'women',
     category: 'adults_15m',
     totalTime: 6.18,
@@ -176,8 +172,9 @@ const GLOBAL_IFSC_RECORDS: LeaderboardEntry[] = [
     id: 'rec-w3',
     rank: 3,
     climberName: 'Emma Hunt',
-    country: 'United States',
+    country: 'Spojené státy americké',
     countryCode: 'USA',
+    flagEmoji: '🇺🇸',
     gender: 'women',
     category: 'adults_15m',
     totalTime: 6.36,
@@ -192,8 +189,9 @@ const GLOBAL_IFSC_RECORDS: LeaderboardEntry[] = [
     id: 'rec-u15-1',
     rank: 1,
     climberName: 'Lucas Zhang',
-    country: 'China',
+    country: 'Čína',
     countryCode: 'CHN',
+    flagEmoji: '🇨🇳',
     gender: 'men',
     category: 'youth_u15',
     totalTime: 3.82,
@@ -207,8 +205,9 @@ const GLOBAL_IFSC_RECORDS: LeaderboardEntry[] = [
     id: 'rec-u15-2',
     rank: 2,
     climberName: 'Matyáš Král',
-    country: 'Czech Republic',
+    country: 'Česká republika',
     countryCode: 'CZE',
+    flagEmoji: '🇨🇿',
     gender: 'men',
     category: 'youth_u15',
     totalTime: 4.15,
@@ -223,8 +222,9 @@ const GLOBAL_IFSC_RECORDS: LeaderboardEntry[] = [
     id: 'rec-u13-1',
     rank: 1,
     climberName: 'Jakub Sýkora',
-    country: 'Czech Republic',
+    country: 'Česká republika',
     countryCode: 'CZE',
+    flagEmoji: '🇨🇿',
     gender: 'men',
     category: 'youth_u13',
     totalTime: 4.88,
@@ -236,21 +236,55 @@ const GLOBAL_IFSC_RECORDS: LeaderboardEntry[] = [
   },
 ];
 
+const MONTH_NAMES_CS = [
+  'Leden', 'Únor', 'Březen', 'Duben', 'Květen', 'Červen',
+  'Červenec', 'Srpen', 'Září', 'Říjen', 'Listopad', 'Prosinec'
+];
+
+const MONTH_NAMES_EN = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'
+];
+
 interface LeaderboardsProps {
   lang?: Language;
+  runs?: SpeedRun[];
+  onRunsChanged?: (runs: SpeedRun[]) => void;
+  userProfile?: UserProfile;
+  onOpenAuth?: () => void;
 }
 
-export const Leaderboards: React.FC<LeaderboardsProps> = ({ lang = 'cs' }) => {
-  const profile = getUserProfile();
+export const Leaderboards: React.FC<LeaderboardsProps> = ({
+  lang = 'cs',
+  runs: propRuns,
+  onRunsChanged,
+  userProfile: propUserProfile,
+  onOpenAuth,
+}) => {
+  const profile = propUserProfile || getUserProfile();
   const t = TRANSLATIONS[lang];
-  const userRuns = getStoredRuns();
+  const userRuns = propRuns || getStoredRuns();
 
-  const [activeMainTab, setActiveMainTab] = useState<'leaderboard' | 'history'>('leaderboard');
+  const [activeMainTab, setActiveMainTab] = useState<'leaderboard' | 'history'>('history');
   const [genderFilter, setGenderFilter] = useState<'men' | 'women'>('men');
   const [categoryFilter, setCategoryFilter] = useState<'all' | 'adults_15m' | 'youth_u15' | 'youth_u13'>('all');
   const [venueFilter, setVenueFilter] = useState<string>('all');
-  const [entries, setEntries] = useState<LeaderboardEntry[]>(GLOBAL_IFSC_RECORDS);
   const [showSubmitModal, setShowSubmitModal] = useState<boolean>(false);
+  const [showClearConfirm, setShowClearConfirm] = useState<boolean>(false);
+
+  // Determine initial calendar month and year based on runs or current date
+  const initialCalendarDate = useMemo(() => {
+    if (userRuns.length > 0) {
+      const d = new Date(userRuns[0].date);
+      if (!isNaN(d.getTime())) return { year: d.getFullYear(), month: d.getMonth() };
+    }
+    const now = new Date();
+    return { year: now.getFullYear(), month: now.getMonth() };
+  }, [userRuns]);
+
+  const [calendarYear, setCalendarYear] = useState<number>(initialCalendarDate.year);
+  const [calendarMonth, setCalendarMonth] = useState<number>(initialCalendarDate.month); // 0-11
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState<string | null>(null);
 
   // Submission Form State
   const [subName, setSubName] = useState<string>(profile.name);
@@ -258,17 +292,246 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({ lang = 'cs' }) => {
   const [subGym, setSubGym] = useState<string>('Big Wall Praha (15m)');
   const [subEvent, setSubEvent] = useState<string>('Oficiální tréninkový výlez Fifteen');
   const [subCategory, setSubCategory] = useState<'adults_15m' | 'youth_u15' | 'youth_u13'>('adults_15m');
+  const [customSubmittedEntries, setCustomSubmittedEntries] = useState<LeaderboardEntry[]>([]);
 
-  // Calendar State for History Tab
-  const [selectedCalendarDate, setSelectedCalendarDate] = useState<string>('2026-11-06');
+  // Dynamic user entry for IFSC leaderboard
+  const dynamicUserEntry = useMemo<LeaderboardEntry | null>(() => {
+    const validRuns = userRuns.filter((r) => !r.isFalseStart);
+    if (validRuns.length === 0) return null;
 
-  // Filtered leaderboard list
-  const filteredEntries = entries
-    .filter((e) => e.gender === genderFilter)
-    .filter((e) => (categoryFilter === 'all' ? true : e.category === categoryFilter))
-    .filter((e) => (venueFilter === 'all' ? true : e.gym.toLowerCase().includes(venueFilter.toLowerCase())))
-    .sort((a, b) => a.totalTime - b.totalTime);
+    // Pick best run
+    const bestRun = [...validRuns].sort((a, b) => a.totalTime - b.totalTime)[0];
+    return {
+      id: 'active-user-best',
+      rank: 0,
+      climberName: `${profile.name || (lang === 'cs' ? 'Můj profil' : 'My profile')} (Vy)`,
+      country: profile.nationality,
+      countryCode: profile.nationalityCode,
+      flagEmoji: profile.flagEmoji,
+      gender: profile.gender,
+      category: bestRun.routeCategory,
+      totalTime: bestRun.totalTime,
+      splits: bestRun.splits,
+      gym: bestRun.gym,
+      event: 'Nejlepší osobní výkon Fifteen',
+      date: bestRun.date.split('T')[0],
+      isVerified: true,
+      isUser: true,
+    };
+  }, [userRuns, profile]);
 
+  // Filtered leaderboard entries including dynamic user entry
+  const filteredEntries = useMemo(() => {
+    const baseList = [...GLOBAL_IFSC_RECORDS, ...customSubmittedEntries];
+    if (dynamicUserEntry) {
+      baseList.push(dynamicUserEntry);
+    }
+
+    return baseList
+      .filter((e) => e.gender === genderFilter)
+      .filter((e) => (categoryFilter === 'all' ? true : e.category === categoryFilter))
+      .filter((e) => (venueFilter === 'all' ? true : e.gym.toLowerCase().includes(venueFilter.toLowerCase())))
+      .sort((a, b) => a.totalTime - b.totalTime);
+  }, [genderFilter, categoryFilter, venueFilter, customSubmittedEntries, dynamicUserEntry]);
+
+  // Calendar days computation for active calendarYear & calendarMonth
+  const calendarData = useMemo(() => {
+    const totalDaysInMonth = new Date(calendarYear, calendarMonth + 1, 0).getDate();
+    const firstDayIndex = new Date(calendarYear, calendarMonth, 1).getDay(); // 0 is Sunday
+    // Convert to Monday = 0, Sunday = 6
+    const offsetDays = (firstDayIndex + 6) % 7;
+
+    // Group user runs by 'YYYY-MM-DD'
+    const runsByDate: Record<string, SpeedRun[]> = {};
+    userRuns.forEach((r) => {
+      const dateKey = r.date.split('T')[0];
+      if (!runsByDate[dateKey]) runsByDate[dateKey] = [];
+      runsByDate[dateKey].push(r);
+    });
+
+    const monthStr = String(calendarMonth + 1).padStart(2, '0');
+    const days = [];
+
+    // All-time best run among user runs for PB highlight
+    const validRuns = userRuns.filter((r) => !r.isFalseStart);
+    const allTimeBest = validRuns.length > 0 ? Math.min(...validRuns.map((r) => r.totalTime)) : null;
+
+    let activeDaysCount = 0;
+    let totalRunsThisMonth = 0;
+
+    for (let day = 1; day <= totalDaysInMonth; day++) {
+      const dayStr = String(day).padStart(2, '0');
+      const dateKey = `${calendarYear}-${monthStr}-${dayStr}`;
+      const dayRuns = runsByDate[dateKey] || [];
+      const validDayRuns = dayRuns.filter((r) => !r.isFalseStart);
+
+      let bestTime: number | null = null;
+      let isPB = false;
+
+      if (validDayRuns.length > 0) {
+        bestTime = Math.min(...validDayRuns.map((r) => r.totalTime));
+        if (allTimeBest && Math.abs(bestTime - allTimeBest) < 0.001) {
+          isPB = true;
+        }
+      }
+
+      if (dayRuns.length > 0) {
+        activeDaysCount++;
+        totalRunsThisMonth += dayRuns.length;
+      }
+
+      days.push({
+        day,
+        dateKey,
+        runs: dayRuns.length,
+        best: bestTime ? `${bestTime.toFixed(2)}s` : null,
+        isPB,
+        runList: dayRuns,
+      });
+    }
+
+    return {
+      offsetDays,
+      days,
+      activeDaysCount,
+      totalRunsThisMonth,
+    };
+  }, [calendarYear, calendarMonth, userRuns]);
+
+  // Selected date runs
+  const selectedDateRuns = useMemo(() => {
+    if (!selectedCalendarDate) return [];
+    return userRuns.filter((r) => r.date.startsWith(selectedCalendarDate));
+  }, [selectedCalendarDate, userRuns]);
+
+  // Real Progression Curve Points
+  const progressionData = useMemo(() => {
+    const valid = userRuns
+      .filter((r) => !r.isFalseStart && r.totalTime > 0)
+      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+    if (valid.length === 0) return null;
+
+    const times = valid.map((r) => r.totalTime);
+    const minTime = Math.min(...times);
+    const maxTime = Math.max(...times);
+    const timeRange = Math.max(0.5, maxTime - minTime);
+
+    // SVG coordinate mapping (width 500, height 120, padding x 30, padding y 20)
+    // In speed climbing, lower time is BETTER (higher up on chart)
+    const svgWidth = 500;
+    const svgHeight = 120;
+    const padX = 35;
+    const padY = 22;
+
+    const points = valid.map((run, idx) => {
+      const x = valid.length === 1 ? svgWidth / 2 : padX + (idx / (valid.length - 1)) * (svgWidth - padX * 2);
+      // Normalized: minTime -> padY (top), maxTime -> svgHeight - padY (bottom)
+      const normalized = (run.totalTime - minTime) / timeRange;
+      const y = padY + normalized * (svgHeight - padY * 2);
+      return {
+        x,
+        y,
+        time: run.totalTime,
+        date: run.date.split('T')[0],
+        id: run.id,
+      };
+    });
+
+    const pathD = points.reduce((acc, pt, i) => {
+      return i === 0 ? `M ${pt.x} ${pt.y}` : `${acc} L ${pt.x} ${pt.y}`;
+    }, '');
+
+    const areaD = points.length > 0
+      ? `${pathD} L ${points[points.length - 1].x} ${svgHeight} L ${points[0].x} ${svgHeight} Z`
+      : '';
+
+    return {
+      points,
+      pathD,
+      areaD,
+      minTime,
+      maxTime,
+      count: valid.length,
+      bestRun: valid.reduce((best, cur) => (cur.totalTime < best.totalTime ? cur : best), valid[0]),
+    };
+  }, [userRuns]);
+
+  // Overall metrics calculated from REAL runs
+  const metrics = useMemo(() => {
+    const valid = userRuns.filter((r) => !r.isFalseStart);
+    const bestTime = valid.length > 0 ? Math.min(...valid.map((r) => r.totalTime)) : profile.personalBest;
+    const totalRuns = userRuns.length;
+    const falseStarts = userRuns.filter((r) => r.isFalseStart).length;
+    const successRate = totalRuns > 0 ? (((totalRuns - falseStarts) / totalRuns) * 100).toFixed(1) : '100.0';
+
+    const reactionRuns = userRuns.filter((r) => r.reactionTime && r.reactionTime > 0.05);
+    const avgReaction =
+      reactionRuns.length > 0
+        ? (reactionRuns.reduce((sum, r) => sum + r.reactionTime, 0) / reactionRuns.length).toFixed(3)
+        : '0.142';
+
+    return {
+      bestTime: bestTime.toFixed(3),
+      activeDays: calendarData.activeDaysCount,
+      totalRunsThisMonth: calendarData.totalRunsThisMonth,
+      totalRunsAllTime: totalRuns,
+      avgReaction,
+      successRate,
+    };
+  }, [userRuns, profile.personalBest, calendarData]);
+
+  // Month navigation handlers
+  const handlePrevMonth = () => {
+    if (calendarMonth === 0) {
+      setCalendarMonth(11);
+      setCalendarYear((y) => y - 1);
+    } else {
+      setCalendarMonth((m) => m - 1);
+    }
+    setSelectedCalendarDate(null);
+  };
+
+  const handleNextMonth = () => {
+    if (calendarMonth === 11) {
+      setCalendarMonth(0);
+      setCalendarYear((y) => y + 1);
+    } else {
+      setCalendarMonth((m) => m + 1);
+    }
+    setSelectedCalendarDate(null);
+  };
+
+  // Run deletion
+  const handleDeleteSingleRun = (runId: string) => {
+    deleteRun(runId);
+    const updated = getStoredRuns();
+    if (onRunsChanged) {
+      onRunsChanged(updated);
+    }
+  };
+
+  // Demo runs cleanup
+  const handleClearDemoRuns = () => {
+    clearDemoRuns();
+    const updated = getStoredRuns();
+    if (onRunsChanged) {
+      onRunsChanged(updated);
+    }
+  };
+
+  // Full history wipe
+  const handleClearAllHistory = () => {
+    clearAllRuns();
+    const updated = getStoredRuns();
+    if (onRunsChanged) {
+      onRunsChanged(updated);
+    }
+    setShowClearConfirm(false);
+    setSelectedCalendarDate(null);
+  };
+
+  // Manual Time Submission Modal
   const handleSubmitRun = (e: React.FormEvent) => {
     e.preventDefault();
     const timeNum = parseFloat(subTime);
@@ -278,9 +541,10 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({ lang = 'cs' }) => {
       id: 'sub-' + Date.now(),
       rank: 0,
       climberName: `${subName} (Vy)`,
-      country: 'Czech Republic',
-      countryCode: 'CZE',
-      gender: genderFilter,
+      country: profile.nationality,
+      countryCode: profile.nationalityCode,
+      flagEmoji: profile.flagEmoji,
+      gender: profile.gender,
       category: subCategory,
       totalTime: timeNum,
       splits: {
@@ -292,25 +556,49 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({ lang = 'cs' }) => {
       event: subEvent,
       date: new Date().toISOString().split('T')[0],
       isVerified: true,
+      isUser: true,
     };
 
-    setEntries((prev) => [newEntry, ...prev]);
+    setCustomSubmittedEntries((prev) => [newEntry, ...prev]);
+
+    // Also persist into user speed runs
+    const newRun: SpeedRun = {
+      id: 'manual-' + Date.now(),
+      date: new Date().toISOString(),
+      totalTime: timeNum,
+      splits: newEntry.splits,
+      reactionTime: 0.14,
+      isFalseStart: false,
+      betaUsed: 'standard',
+      routeCategory: subCategory,
+      gym: subGym,
+      climberName: subName,
+      gender: profile.gender,
+      nationalityCode: profile.nationalityCode,
+      flagEmoji: profile.flagEmoji,
+      cloudSyncStatus: 'synced_gdrive',
+      isPersonalBest: timeNum < profile.personalBest,
+    };
+
+    saveRun(newRun);
+    if (onRunsChanged) {
+      onRunsChanged(getStoredRuns());
+    }
+
     setShowSubmitModal(false);
     setSubTime('');
   };
 
   // CSV Exporter
   const handleExportRunsCsv = () => {
-    const runs = userRuns.length > 0 ? userRuns : [
-      { id: '1', date: '2026-11-06T10:15:00Z', totalTime: 5.642, reactionTime: 0.138, routeCategory: 'adults_15m', gym: 'Big Wall Praha' },
-      { id: '2', date: '2026-11-04T16:20:00Z', totalTime: 5.710, reactionTime: 0.142, routeCategory: 'adults_15m', gym: 'Big Wall Praha' },
-      { id: '3', date: '2026-11-02T14:00:00Z', totalTime: 5.890, reactionTime: 0.155, routeCategory: 'adults_15m', gym: 'Big Wall Praha' },
-      { id: '4', date: '2026-10-28T09:30:00Z', totalTime: 6.120, reactionTime: 0.160, routeCategory: 'adults_15m', gym: 'HUDY Brno' },
-    ];
+    if (userRuns.length === 0) return;
 
-    const headers = 'ID,Datum,Cas_Sekundy,Reakce,Kategorie,Stena\n';
-    const rows = runs
-      .map((r: any) => `${r.id},${r.date},${r.totalTime},${r.reactionTime},${r.routeCategory},"${r.gym}"`)
+    const headers = 'ID,Datum,Cas_Sekundy,Reakce,Kategorie,Stena,Lezec,Zeme\n';
+    const rows = userRuns
+      .map(
+        (r) =>
+          `${r.id},${r.date},${r.totalTime},${r.reactionTime || ''},${r.routeCategory},"${r.gym || ''}","${r.climberName || ''}","${r.nationalityCode || ''}"`
+      )
       .join('\n');
 
     const blob = new Blob([headers + rows], { type: 'text/csv;charset=utf-8;' });
@@ -323,24 +611,10 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({ lang = 'cs' }) => {
     document.body.removeChild(link);
   };
 
-  // Mock calendar days in November 2026
-  const CALENDAR_DAYS = [
-    { day: 1, runs: 0, best: null },
-    { day: 2, runs: 4, best: '5.89s' },
-    { day: 3, runs: 0, best: null },
-    { day: 4, runs: 6, best: '5.71s' },
-    { day: 5, runs: 0, best: null },
-    { day: 6, runs: 8, best: '5.64s', isPB: true },
-    { day: 7, runs: 3, best: '5.69s' },
-    { day: 8, runs: 0, best: null },
-    { day: 9, runs: 5, best: '5.66s' },
-    { day: 10, runs: 0, best: null },
-    { day: 11, runs: 0, best: null },
-    { day: 12, runs: 4, best: '5.75s' },
-    { day: 13, runs: 0, best: null },
-    { day: 14, runs: 0, best: null },
-    { day: 15, runs: 7, best: '5.68s' },
-  ];
+  const monthLabel =
+    lang === 'cs'
+      ? `${MONTH_NAMES_CS[calendarMonth]} ${calendarYear}`
+      : `${MONTH_NAMES_EN[calendarMonth]} ${calendarYear}`;
 
   return (
     <div className="max-w-6xl mx-auto px-3 sm:px-6 py-4 space-y-4 sm:space-y-6 w-full max-w-full overflow-x-hidden">
@@ -353,35 +627,48 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({ lang = 'cs' }) => {
           </h1>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
             {activeMainTab === 'leaderboard'
-              ? 'Světové rekordy IFSC (Paříž, Salt Lake City, Wujiang) a ověřené časy lezců'
-              : 'Přehled vašich tréninkových dnů, graf zrychlování a export dat'}
+              ? 'Světové rekordy IFSC a ověřené časy lezců'
+              : 'Reálný přehled vašich tréninkových dnů, graf zrychlování a správa pokusů'}
           </p>
         </div>
 
-        {/* Dual Tab Segmented Control */}
-        <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800">
-          <button
-            onClick={() => setActiveMainTab('leaderboard')}
-            className={`min-h-[40px] px-3.5 py-2 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 ${
-              activeMainTab === 'leaderboard'
-                ? 'bg-white dark:bg-slate-800 text-slate-950 dark:text-white shadow-sm'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
-            }`}
-          >
-            <Trophy className="w-4 h-4 text-amber-500" />
-            <span>{lang === 'cs' ? 'IFSC Žebříčky' : 'IFSC Rankings'}</span>
-          </button>
-          <button
-            onClick={() => setActiveMainTab('history')}
-            className={`min-h-[40px] px-3.5 py-2 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 ${
-              activeMainTab === 'history'
-                ? 'bg-white dark:bg-slate-800 text-slate-950 dark:text-white shadow-sm'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
-            }`}
-          >
-            <CalendarIcon className="w-4 h-4 text-red-600" />
-            <span>{lang === 'cs' ? 'Kalendář & Grafy' : 'Calendar & Progress'}</span>
-          </button>
+        {/* Athlete profile pill & dual tab segmented control */}
+        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-between sm:justify-end">
+          {onOpenAuth && (
+            <button
+              onClick={onOpenAuth}
+              className="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs font-bold text-slate-700 dark:text-slate-300 hover:border-red-500 transition-colors flex items-center gap-1.5"
+              title="Upravit profil lezce a národnost"
+            >
+              <span className="text-base">{profile.flagEmoji}</span>
+              <span className="truncate max-w-[120px]">{profile.name}</span>
+            </button>
+          )}
+
+          <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800">
+            <button
+              onClick={() => setActiveMainTab('history')}
+              className={`min-h-[38px] px-3.5 py-1.5 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 ${
+                activeMainTab === 'history'
+                  ? 'bg-white dark:bg-slate-800 text-slate-950 dark:text-white shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+              }`}
+            >
+              <CalendarIcon className="w-4 h-4 text-red-600" />
+              <span>{lang === 'cs' ? 'Kalendář & Grafy' : 'Calendar & Progress'}</span>
+            </button>
+            <button
+              onClick={() => setActiveMainTab('leaderboard')}
+              className={`min-h-[38px] px-3.5 py-1.5 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 ${
+                activeMainTab === 'leaderboard'
+                  ? 'bg-white dark:bg-slate-800 text-slate-950 dark:text-white shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+              }`}
+            >
+              <Trophy className="w-4 h-4 text-amber-500" />
+              <span>{lang === 'cs' ? 'IFSC Žebříčky' : 'IFSC Rankings'}</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -421,7 +708,7 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({ lang = 'cs' }) => {
                   onClick={() => setCategoryFilter('all')}
                   className={`px-2.5 py-1.5 rounded-lg transition-colors ${
                     categoryFilter === 'all'
-                      ? 'bg-red-600 text-white'
+                      ? 'bg-white dark:bg-slate-800 text-slate-950 dark:text-white shadow-sm'
                       : 'text-slate-600 dark:text-slate-400'
                   }`}
                 >
@@ -431,7 +718,7 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({ lang = 'cs' }) => {
                   onClick={() => setCategoryFilter('adults_15m')}
                   className={`px-2.5 py-1.5 rounded-lg transition-colors ${
                     categoryFilter === 'adults_15m'
-                      ? 'bg-red-600 text-white'
+                      ? 'bg-white dark:bg-slate-800 text-slate-950 dark:text-white shadow-sm'
                       : 'text-slate-600 dark:text-slate-400'
                   }`}
                 >
@@ -441,7 +728,7 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({ lang = 'cs' }) => {
                   onClick={() => setCategoryFilter('youth_u15')}
                   className={`px-2.5 py-1.5 rounded-lg transition-colors ${
                     categoryFilter === 'youth_u15'
-                      ? 'bg-red-600 text-white'
+                      ? 'bg-white dark:bg-slate-800 text-slate-950 dark:text-white shadow-sm'
                       : 'text-slate-600 dark:text-slate-400'
                   }`}
                 >
@@ -451,7 +738,7 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({ lang = 'cs' }) => {
                   onClick={() => setCategoryFilter('youth_u13')}
                   className={`px-2.5 py-1.5 rounded-lg transition-colors ${
                     categoryFilter === 'youth_u13'
-                      ? 'bg-red-600 text-white'
+                      ? 'bg-white dark:bg-slate-800 text-slate-950 dark:text-white shadow-sm'
                       : 'text-slate-600 dark:text-slate-400'
                   }`}
                 >
@@ -461,22 +748,6 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({ lang = 'cs' }) => {
             </div>
 
             <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1.5 flex-1 sm:flex-none">
-                <MapPin className="w-4 h-4 text-slate-400 shrink-0" />
-                <select
-                  value={venueFilter}
-                  onChange={(e) => setVenueFilter(e.target.value)}
-                  className="min-h-[40px] text-xs px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 font-semibold text-slate-800 dark:text-slate-200 w-full sm:w-auto"
-                >
-                  <option value="all">Všechny haly & Světové rekordy</option>
-                  <option value="Bourget">Le Bourget (Paříž – Olympijská stěna)</option>
-                  <option value="Salt Lake">Salt Lake City (USA World Cup)</option>
-                  <option value="Wujiang">Wujiang (Čína IFSC)</option>
-                  <option value="Big Wall">Big Wall Praha (ČR)</option>
-                  <option value="HUDY">HUDY Brno (ČR)</option>
-                </select>
-              </div>
-
               <button
                 onClick={() => setShowSubmitModal(true)}
                 className="min-h-[40px] px-3.5 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm active:scale-95 flex items-center gap-1.5 shrink-0"
@@ -494,7 +765,7 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({ lang = 'cs' }) => {
                 <thead className="bg-slate-50 dark:bg-slate-950 text-slate-500 font-bold border-b border-slate-200 dark:border-slate-800">
                   <tr>
                     <th className="py-3 px-3 sm:px-4 w-12 text-center">#</th>
-                    <th className="py-3 px-3 sm:px-4">Lezec & Země</th>
+                    <th className="py-3 px-3 sm:px-4">Lezec & Národnost</th>
                     <th className="py-3 px-3 sm:px-4">Čas</th>
                     <th className="py-3 px-3 sm:px-4 hidden md:table-cell">Mezičasy (5m / 10m / 15m)</th>
                     <th className="py-3 px-3 sm:px-4 hidden sm:table-cell">Lokalita / Akce</th>
@@ -504,12 +775,12 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({ lang = 'cs' }) => {
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
                   {filteredEntries.map((entry, index) => {
                     const rank = index + 1;
-                    const isUser = entry.climberName.includes('(Vy)');
+                    const isUser = entry.isUser || entry.climberName.includes('(Vy)');
                     return (
                       <tr
                         key={entry.id}
                         className={`hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors ${
-                          isUser ? 'bg-red-50/50 dark:bg-red-950/20 font-semibold' : ''
+                          isUser ? 'bg-red-50/60 dark:bg-red-950/30 font-semibold' : ''
                         }`}
                       >
                         <td className="py-3.5 px-3 sm:px-4 text-center font-mono font-bold">
@@ -531,6 +802,7 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({ lang = 'cs' }) => {
                         </td>
                         <td className="py-3.5 px-3 sm:px-4">
                           <div className="flex items-center gap-2">
+                            {entry.flagEmoji && <span className="text-base">{entry.flagEmoji}</span>}
                             <span className="font-bold text-slate-900 dark:text-white">
                               {entry.climberName}
                             </span>
@@ -572,37 +844,87 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({ lang = 'cs' }) => {
         </div>
       )}
 
-      {/* VIEW 2: TRAINING CALENDAR & ANALYTICS GRAPH */}
+      {/* VIEW 2: TRAINING CALENDAR & ANALYTICS GRAPH (100% REAL DATA) */}
       {activeMainTab === 'history' && (
         <div className="space-y-4">
-          {/* Quick Metrics Bar */}
+          {/* Action Toolbar for Data Management */}
+          <div className="flex flex-wrap items-center justify-between gap-2 p-3 bg-slate-100 dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 text-xs">
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                <span className="text-base">{profile.flagEmoji}</span>
+                <span>{profile.name || (lang === 'cs' ? 'Můj profil' : 'My profile')}</span>
+                <span className="text-slate-400">({userRuns.length} výlezů)</span>
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {userRuns.length > 0 && (
+                <>
+                  <button
+                    type="button"
+                    onClick={handleExportRunsCsv}
+                    className="px-2.5 py-1 rounded-xl bg-white dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 transition-colors font-bold flex items-center gap-1 text-[11px]"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Export CSV</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowClearConfirm(true)}
+                    className="px-2.5 py-1 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 border border-red-500/30 transition-colors font-bold flex items-center gap-1 text-[11px]"
+                    title="Smazat všechny zaznamenané výkony"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Smazat historii</span>
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Quick Metrics Bar from REAL Runs */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3">
             <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
-              <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">Osobní rekord (15m)</span>
-              <span className="text-xl sm:text-2xl font-mono font-black text-red-600 dark:text-red-400 mt-0.5 block">5.642s</span>
-              <span className="text-[10px] text-emerald-500 font-semibold mt-0.5 block">Big Wall Praha · WR Delta +0.90s</span>
+              <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">Osobní rekord (PB)</span>
+              <span className="text-xl sm:text-2xl font-mono font-black text-red-600 dark:text-red-400 mt-0.5 block">
+                {metrics.bestTime}s
+              </span>
+              <span className="text-[10px] text-slate-400 font-semibold mt-0.5 block truncate">
+                {profile.name} · {profile.nationalityCode}
+              </span>
             </div>
 
             <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
               <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">Tréninků v měsíci</span>
-              <span className="text-xl sm:text-2xl font-mono font-black text-slate-900 dark:text-white mt-0.5 block">14 dní</span>
-              <span className="text-[10px] text-slate-400 block mt-0.5">Celkem 42 měřených výlezů</span>
+              <span className="text-xl sm:text-2xl font-mono font-black text-slate-900 dark:text-white mt-0.5 block">
+                {metrics.activeDays} {metrics.activeDays === 1 ? 'den' : metrics.activeDays >= 2 && metrics.activeDays <= 4 ? 'dny' : 'dní'}
+              </span>
+              <span className="text-[10px] text-slate-400 block mt-0.5">
+                {metrics.totalRunsThisMonth} výlezů v {monthLabel}
+              </span>
             </div>
 
             <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
               <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">Průměrná reakce</span>
-              <span className="text-xl sm:text-2xl font-mono font-black text-amber-500 mt-0.5 block">0.134s</span>
+              <span className="text-xl sm:text-2xl font-mono font-black text-amber-500 mt-0.5 block">
+                {metrics.avgReaction}s
+              </span>
               <span className="text-[10px] text-slate-400 block mt-0.5">IFSC limit DQ: &lt; 0.100s</span>
             </div>
 
             <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
               <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">Konzistence výlezů</span>
-              <span className="text-xl sm:text-2xl font-mono font-black text-emerald-500 mt-0.5 block">94.8%</span>
-              <span className="text-[10px] text-slate-400 block mt-0.5">1 selhání z 20 pokusů</span>
+              <span className="text-xl sm:text-2xl font-mono font-black text-emerald-500 mt-0.5 block">
+                {metrics.successRate}%
+              </span>
+              <span className="text-[10px] text-slate-400 block mt-0.5">
+                {metrics.totalRunsAllTime} výlezů celkově
+              </span>
             </div>
           </div>
 
-          {/* Interactive Progression Graph */}
+          {/* REAL Interactive Progression Graph */}
           <div className="p-4 sm:p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-3">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div className="flex items-center gap-2">
@@ -611,108 +933,134 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({ lang = 'cs' }) => {
                   Křivka rychlostního progresu (Čas v sekundách)
                 </h3>
               </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={handleExportRunsCsv}
-                  className="px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-colors flex items-center gap-1.5 border border-slate-200 dark:border-slate-700"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Export CSV</span>
-                </button>
-              </div>
+              <span className="text-xs text-slate-400 font-mono">
+                {progressionData ? `${progressionData.count} platných pokusů` : '0 pokusů'}
+              </span>
             </div>
 
-            {/* Visual SVG Progression Graph */}
-            <div className="relative h-44 w-full bg-slate-50 dark:bg-slate-950 rounded-2xl p-3 border border-slate-200 dark:border-slate-800 overflow-hidden">
-              <svg className="w-full h-full overflow-visible" viewBox="0 0 500 120" preserveAspectRatio="none">
-                {/* Reference line: 6.0s */}
-                <line x1="0" y1="50" x2="500" y2="50" stroke="#94a3b8" strokeDasharray="4 4" strokeWidth="0.8" opacity="0.4" />
-                <text x="5" y="46" fill="#94a3b8" fontSize="8" fontFamily="monospace">6.00s</text>
+            {progressionData ? (
+              <div className="space-y-2">
+                <div className="relative h-44 w-full bg-slate-50 dark:bg-slate-950 rounded-2xl p-3 border border-slate-200 dark:border-slate-800 overflow-hidden">
+                  <svg className="w-full h-full overflow-visible" viewBox="0 0 500 120" preserveAspectRatio="none">
+                    <defs>
+                      <linearGradient id="realProgressionGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#ef4444" stopOpacity="0.4" />
+                        <stop offset="100%" stopColor="#ef4444" stopOpacity="0" />
+                      </linearGradient>
+                    </defs>
 
-                {/* Target line: 5.50s */}
-                <line x1="0" y1="85" x2="500" y2="85" stroke="#ef4444" strokeDasharray="4 4" strokeWidth="1" opacity="0.6" />
-                <text x="5" y="81" fill="#ef4444" fontSize="8" fontFamily="monospace">Cíl: 5.50s</text>
-
-                {/* Progression curve */}
-                <path
-                  d="M 20 20 L 90 32 L 170 38 L 240 45 L 320 62 L 400 70 L 480 82"
-                  fill="none"
-                  stroke="#ef4444"
-                  strokeWidth="3.5"
-                  strokeLinecap="round"
-                />
-
-                {/* Area under curve */}
-                <path
-                  d="M 20 20 L 90 32 L 170 38 L 240 45 L 320 62 L 400 70 L 480 82 L 480 120 L 20 120 Z"
-                  fill="url(#progressionGradient)"
-                  opacity="0.2"
-                />
-
-                <defs>
-                  <linearGradient id="progressionGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#ef4444" />
-                    <stop offset="100%" stopColor="#ef4444" stopOpacity="0" />
-                  </linearGradient>
-                </defs>
-
-                {/* Nodes */}
-                {[
-                  { cx: 20, cy: 20, time: '7.15s' },
-                  { cx: 90, cy: 32, time: '6.82s' },
-                  { cx: 170, cy: 38, time: '6.45s' },
-                  { cx: 240, cy: 45, time: '6.12s' },
-                  { cx: 320, cy: 62, time: '5.89s' },
-                  { cx: 400, cy: 70, time: '5.71s' },
-                  { cx: 480, cy: 82, time: '5.64s', active: true },
-                ].map((pt, i) => (
-                  <g key={i}>
-                    <circle
-                      cx={pt.cx}
-                      cy={pt.cy}
-                      r={pt.active ? 6 : 4}
-                      fill={pt.active ? '#ef4444' : '#ffffff'}
-                      stroke="#ef4444"
-                      strokeWidth={pt.active ? 3 : 2}
-                    />
-                    <text
-                      x={pt.cx}
-                      y={pt.cy - 8}
-                      textAnchor="middle"
-                      fill="#ffffff"
-                      fontSize="9"
-                      fontWeight="bold"
-                      fontFamily="monospace"
-                      className="drop-shadow"
-                    >
-                      {pt.time}
+                    {/* Reference top/bottom time lines */}
+                    <line x1="0" y1="22" x2="500" y2="22" stroke="#ef4444" strokeDasharray="3 3" strokeWidth="0.8" opacity="0.4" />
+                    <text x="5" y="18" fill="#ef4444" fontSize="8" fontFamily="monospace">
+                      Nejlepší: {progressionData.minTime.toFixed(2)}s
                     </text>
-                  </g>
-                ))}
-              </svg>
-            </div>
-            <div className="flex justify-between text-[11px] text-slate-500 font-mono">
-              <span>Září 2026 (Začátek tréninku)</span>
-              <span>Říjen 2026</span>
-              <span className="text-red-500 font-bold">Listopad 2026 (PB: 5.642s)</span>
-            </div>
+
+                    {progressionData.maxTime > progressionData.minTime && (
+                      <>
+                        <line x1="0" y1="98" x2="500" y2="98" stroke="#94a3b8" strokeDasharray="3 3" strokeWidth="0.8" opacity="0.4" />
+                        <text x="5" y="94" fill="#94a3b8" fontSize="8" fontFamily="monospace">
+                          {progressionData.maxTime.toFixed(2)}s
+                        </text>
+                      </>
+                    )}
+
+                    {/* Area under curve */}
+                    {progressionData.areaD && (
+                      <path d={progressionData.areaD} fill="url(#realProgressionGrad)" />
+                    )}
+
+                    {/* Progression curve line */}
+                    {progressionData.pathD && (
+                      <path
+                        d={progressionData.pathD}
+                        fill="none"
+                        stroke="#ef4444"
+                        strokeWidth="3.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    )}
+
+                    {/* Node points */}
+                    {progressionData.points.map((pt, i) => {
+                      const isBest = Math.abs(pt.time - progressionData.minTime) < 0.001;
+                      return (
+                        <g key={pt.id || i}>
+                          <circle
+                            cx={pt.x}
+                            cy={pt.y}
+                            r={isBest ? 5.5 : 4}
+                            fill={isBest ? '#ef4444' : '#ffffff'}
+                            stroke="#ef4444"
+                            strokeWidth={isBest ? 3 : 2}
+                          />
+                          <text
+                            x={pt.x}
+                            y={Math.max(12, pt.y - 7)}
+                            textAnchor="middle"
+                            fill="#ef4444"
+                            fontSize="8"
+                            fontWeight="bold"
+                            fontFamily="monospace"
+                          >
+                            {pt.time.toFixed(2)}s
+                          </text>
+                        </g>
+                      );
+                    })}
+                  </svg>
+                </div>
+                <div className="flex justify-between text-[11px] text-slate-500 font-mono">
+                  <span>První zaznamenaný pokus ({progressionData.points[0]?.date})</span>
+                  <span className="text-red-500 font-bold">
+                    Nejlepší čas: {progressionData.minTime.toFixed(3)}s ({progressionData.bestRun.date.split('T')[0]})
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div className="py-8 text-center bg-slate-50 dark:bg-slate-950 rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 text-slate-400 text-xs space-y-1">
+                <Clock className="w-6 h-6 mx-auto text-slate-400" />
+                <p className="font-bold">Zatím žádné zaznamenané pokusy pro graf progresu</p>
+                <p className="text-[11px]">Změřte svůj první výlez v sekci Časomíra pro automatické zobrazení křivky!</p>
+              </div>
+            )}
           </div>
 
-          {/* Interactive Monthly Calendar */}
+          {/* Dynamic Monthly Calendar Connected to REAL Runs */}
           <div className="p-4 sm:p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-3">
             <div className="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-800">
               <div className="flex items-center gap-2">
                 <CalendarIcon className="w-5 h-5 text-red-600" />
                 <h3 className="font-display font-bold text-base text-slate-900 dark:text-white">
-                  Tréninkový kalendář – Listopad 2026
+                  Tréninkový kalendář – {monthLabel}
                 </h3>
               </div>
-              <span className="text-xs font-mono font-bold text-slate-500">
-                8 aktivních dnů v tomto měsíci
-              </span>
+
+              {/* Prev / Next Month Navigator */}
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={handlePrevMonth}
+                  className="p-1.5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 transition-colors"
+                  title="Předchozí měsíc"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                <span className="text-xs font-mono font-bold text-slate-700 dark:text-slate-300 px-1">
+                  {calendarData.activeDaysCount} {calendarData.activeDaysCount === 1 ? 'den' : 'dnů'} s tréninkem
+                </span>
+                <button
+                  type="button"
+                  onClick={handleNextMonth}
+                  className="p-1.5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 transition-colors"
+                  title="Následující měsíc"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
-            {/* Days grid */}
+            {/* Days Grid */}
             <div className="grid grid-cols-7 gap-1.5 text-center text-xs">
               {['Po', 'Út', 'St', 'Čt', 'Pá', 'So', 'Ne'].map((d) => (
                 <div key={d} className="font-bold text-slate-400 py-1 text-[11px]">
@@ -720,34 +1068,114 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({ lang = 'cs' }) => {
                 </div>
               ))}
 
-              {CALENDAR_DAYS.map((c) => (
-                <div
-                  key={c.day}
-                  onClick={() => c.best && setSelectedCalendarDate(`2026-11-${c.day < 10 ? '0' + c.day : c.day}`)}
-                  className={`p-2 rounded-xl border flex flex-col items-center justify-between min-h-[56px] transition-all cursor-pointer ${
-                    c.isPB
-                      ? 'bg-red-50 dark:bg-red-950/40 border-red-500 ring-2 ring-red-500/20'
-                      : c.runs > 0
-                      ? 'bg-slate-50 dark:bg-slate-800/80 border-slate-200 dark:border-slate-700 hover:border-slate-400'
-                      : 'bg-transparent border-transparent text-slate-400 opacity-60'
-                  }`}
-                >
-                  <span className="font-bold text-xs">{c.day}</span>
-                  {c.best && (
-                    <span className={`text-[10px] font-mono font-bold mt-1 px-1 rounded ${
-                      c.isPB ? 'bg-red-600 text-white' : 'text-red-500 dark:text-red-400'
-                    }`}>
-                      {c.best}
-                    </span>
-                  )}
-                  {c.runs > 0 && (
-                    <span className="text-[9px] text-slate-400 mt-0.5">
-                      {c.runs} pokusů
-                    </span>
-                  )}
-                </div>
+              {/* Blank offset days */}
+              {Array.from({ length: calendarData.offsetDays }).map((_, idx) => (
+                <div key={`blank-${idx}`} className="p-2 min-h-[58px] opacity-10 pointer-events-none" />
               ))}
+
+              {/* Days of month */}
+              {calendarData.days.map((c) => {
+                const isSelected = selectedCalendarDate === c.dateKey;
+                return (
+                  <div
+                    key={c.dateKey}
+                    onClick={() => {
+                      if (c.runs > 0) {
+                        setSelectedCalendarDate(isSelected ? null : c.dateKey);
+                      }
+                    }}
+                    className={`p-1.5 sm:p-2 rounded-xl border flex flex-col items-center justify-between min-h-[58px] transition-all cursor-pointer ${
+                      isSelected
+                        ? 'ring-2 ring-red-500 bg-red-100/50 dark:bg-red-950/70 border-red-500 shadow-md'
+                        : c.isPB
+                        ? 'bg-red-50 dark:bg-red-950/40 border-red-500 ring-1 ring-red-500/30'
+                        : c.runs > 0
+                        ? 'bg-slate-50 dark:bg-slate-800/80 border-slate-200 dark:border-slate-700 hover:border-slate-400'
+                        : 'bg-transparent border-transparent text-slate-400 opacity-60'
+                    }`}
+                  >
+                    <span className="font-bold text-xs">{c.day}</span>
+                    {c.best && (
+                      <span
+                        className={`text-[10px] font-mono font-bold mt-1 px-1 rounded ${
+                          c.isPB ? 'bg-red-600 text-white' : 'text-red-500 dark:text-red-400'
+                        }`}
+                      >
+                        {c.best}
+                      </span>
+                    )}
+                    {c.runs > 0 && (
+                      <span className="text-[9px] text-slate-400 mt-0.5">
+                        {c.runs} {c.runs === 1 ? 'pokus' : c.runs < 5 ? 'pokusy' : 'pokusů'}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
+
+            {/* Selected Date Run Detail Card with Deletion */}
+            {selectedCalendarDate && (
+              <div className="mt-4 p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-red-200 dark:border-red-900/50 space-y-3 animate-in fade-in">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Flame className="w-4 h-4 text-red-600" />
+                    <h4 className="font-bold text-sm text-slate-900 dark:text-white">
+                      Trénink ze dne {selectedCalendarDate} ({selectedDateRuns.length} výlezů)
+                    </h4>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedCalendarDate(null)}
+                    className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 font-bold"
+                  >
+                    Zavřít
+                  </button>
+                </div>
+
+                <div className="space-y-2">
+                  {selectedDateRuns.map((run) => (
+                    <div
+                      key={run.id}
+                      className="p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono font-black text-sm text-red-600 dark:text-red-400">
+                          {run.totalTime.toFixed(3)}s
+                        </span>
+                        {run.isPersonalBest && (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                            PB
+                          </span>
+                        )}
+                        {run.isFalseStart && (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300">
+                            Ulitý start
+                          </span>
+                        )}
+                        <span className="text-slate-500 font-medium">
+                          {run.routeCategory === 'adults_15m' ? '15m' : '10m'} · {run.gym}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <span className="text-[11px] font-mono text-slate-400">
+                          Mezičasy: {run.splits.split1.toFixed(2)}s / {run.splits.split2.toFixed(2)}s / {run.splits.split3.toFixed(2)}s
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteSingleRun(run.id)}
+                          className="p-1 rounded-lg hover:bg-red-50 dark:hover:bg-red-950 text-slate-400 hover:text-red-600 transition-colors"
+                          title="Smazat tento pokus"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -785,7 +1213,7 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({ lang = 'cs' }) => {
 
               <div>
                 <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                  Dosažený čas (vteřiny s setinami)
+                  Dosažený čas (vteřiny s tisícinami)
                 </label>
                 <input
                   type="number"
@@ -856,6 +1284,43 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({ lang = 'cs' }) => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Clear All Runs Confirmation Modal */}
+      {showClearConfirm && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl max-w-sm w-full p-5 sm:p-6 border border-slate-200 dark:border-slate-800 shadow-2xl space-y-4">
+            <div className="w-12 h-12 rounded-2xl bg-red-100 dark:bg-red-950/60 text-red-600 flex items-center justify-center mx-auto">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+
+            <div className="text-center space-y-1">
+              <h3 className="font-display font-black text-base text-slate-950 dark:text-white">
+                Smazat celou historii výlezů?
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Tato akce trvale odstraní všech {userRuns.length} naměřených pokusů včetně mezičasů a kalendářních záznamů.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowClearConfirm(false)}
+                className="py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 text-xs font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                Ponechat
+              </button>
+              <button
+                type="button"
+                onClick={handleClearAllHistory}
+                className="py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-sm"
+              >
+                Ano, vymazat
+              </button>
+            </div>
           </div>
         </div>
       )}

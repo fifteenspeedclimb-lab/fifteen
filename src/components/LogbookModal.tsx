@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { Download, Trash2, Trophy, Sparkles, Video, Play, X } from 'lucide-react';
+import { Download, Trash2, Trophy, Sparkles, Video, Play, X, AlertTriangle } from 'lucide-react';
 import { SpeedRun } from '../types/climbing';
-import { deleteRun, removeRunVideo } from '../utils/storage';
+import { deleteRun, removeRunVideo, clearAllRuns, clearDemoRuns } from '../utils/storage';
 import { Language, TRANSLATIONS } from '../utils/i18n';
 
 interface LogbookModalProps {
@@ -24,6 +24,7 @@ export const LogbookModal: React.FC<LogbookModalProps> = ({
   const [activeVideoRun, setActiveVideoRun] = useState<SpeedRun | null>(null);
   const [deletingRunId, setDeletingRunId] = useState<string | null>(null);
   const [confirmDeleteVideoId, setConfirmDeleteVideoId] = useState<string | null>(null);
+  const [showConfirmClearAll, setShowConfirmClearAll] = useState<boolean>(false);
 
   const filteredRuns = runs.filter((r) =>
     filterBeta === 'all' ? true : r.betaUsed === filterBeta
@@ -38,6 +39,17 @@ export const LogbookModal: React.FC<LogbookModalProps> = ({
     if (activeVideoRun?.id === id) {
       setActiveVideoRun(null);
     }
+  };
+
+  const handleClearAll = () => {
+    const empty = clearAllRuns();
+    onRunsChanged(empty);
+    setShowConfirmClearAll(false);
+  };
+
+  const handleClearDemoOnly = () => {
+    const withoutDemo = clearDemoRuns();
+    onRunsChanged(withoutDemo);
   };
 
   const confirmDeleteVideo = (id: string) => {
@@ -114,6 +126,49 @@ export const LogbookModal: React.FC<LogbookModalProps> = ({
           </div>
         </div>
 
+        {/* Action Toolbar for Bulk Deletion and Data Management */}
+        {runs.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs">
+            <span className="text-slate-500 font-medium">
+              Celkem zaznamenáno {runs.length} {runs.length === 1 ? 'výlez' : runs.length < 5 ? 'výlezy' : 'výlezů'}
+            </span>
+
+            <div>
+              {showConfirmClearAll ? (
+              <div className="flex items-center gap-1.5 p-1 bg-red-100 dark:bg-red-950/60 rounded-xl border border-red-300 dark:border-red-900">
+                <span className="text-[11px] text-red-700 dark:text-red-300 font-bold px-1">
+                  Smazat všech {runs.length} časů?
+                </span>
+                <button
+                  type="button"
+                  onClick={handleClearAll}
+                  className="px-2.5 py-1 bg-red-600 text-white rounded-lg text-[10px] font-bold hover:bg-red-700 shadow-sm"
+                >
+                  Ano, smazat
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowConfirmClearAll(false)}
+                  className="px-2 py-1 bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-lg text-[10px]"
+                >
+                  Ne
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setShowConfirmClearAll(true)}
+                disabled={runs.length === 0}
+                className="px-3 py-1.5 rounded-xl border border-red-200 dark:border-red-900/60 text-red-600 dark:text-red-400 font-bold hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors flex items-center gap-1 disabled:opacity-40"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Smazat všechny výkony</span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
         {/* PR Trend */}
         {chartPoints.length >= 2 && (
           <div className="p-4 bg-slate-50 dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-2">
@@ -161,40 +216,54 @@ export const LogbookModal: React.FC<LogbookModalProps> = ({
 
         {/* Runs List */}
         <div className="space-y-2.5">
-          {filteredRuns.map((run) => (
-            <div
-              key={run.id}
-              className="p-3.5 bg-white dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3"
-            >
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="font-mono font-black text-lg text-slate-950 dark:text-white tabular-nums">
-                    {run.totalTime.toFixed(3)}s
-                  </span>
-                  {run.isPersonalBest && (
-                    <span className="px-2 py-0.5 text-[10px] font-black bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 rounded-md">
-                      PR
+          {filteredRuns.length === 0 ? (
+            <div className="p-8 text-center rounded-2xl border border-dashed border-slate-300 dark:border-slate-800 text-slate-400">
+              <Trophy className="w-8 h-8 mx-auto mb-2 opacity-40 text-amber-500" />
+              <p className="text-xs font-bold">Žádné zaznamenané časy</p>
+              <p className="text-[11px] text-slate-500 mt-1">
+                Spusťte měření na stěně pro záznam vašeho prvního oficiálního času.
+              </p>
+            </div>
+          ) : (
+            filteredRuns.map((run) => (
+              <div
+                key={run.id}
+                className="p-3.5 bg-white dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3"
+              >
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono font-black text-lg text-slate-950 dark:text-white tabular-nums">
+                      {run.totalTime.toFixed(3)}s
                     </span>
-                  )}
-                  {run.videoUrl && (
-                    <button
-                      type="button"
-                      onClick={() => setActiveVideoRun(run)}
-                      className="px-2 py-0.5 text-[10px] font-bold bg-red-100 hover:bg-red-200 text-red-800 dark:bg-red-950 dark:hover:bg-red-900 dark:text-red-300 rounded-md flex items-center gap-1 transition-colors"
-                      title="Přehrát nebo spravovat video výlezu"
-                    >
-                      <Play className="w-2.5 h-2.5 fill-current text-red-600" />
-                      <span>Video</span>
-                    </button>
-                  )}
+                    {run.flagEmoji && (
+                      <span className="text-sm leading-none" title={run.nationalityCode}>
+                        {run.flagEmoji}
+                      </span>
+                    )}
+                    {run.isPersonalBest && (
+                      <span className="px-2 py-0.5 text-[10px] font-black bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 rounded-md">
+                        PR
+                      </span>
+                    )}
+                    {run.videoUrl && (
+                      <button
+                        type="button"
+                        onClick={() => setActiveVideoRun(run)}
+                        className="px-2 py-0.5 text-[10px] font-bold bg-red-100 hover:bg-red-200 text-red-800 dark:bg-red-950 dark:hover:bg-red-900 dark:text-red-300 rounded-md flex items-center gap-1 transition-colors"
+                        title="Přehrát nebo spravovat video výlezu"
+                      >
+                        <Play className="w-2.5 h-2.5 fill-current text-red-600" />
+                        <span>Video</span>
+                      </button>
+                    )}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">
+                    {new Date(run.date).toLocaleDateString()} · {run.climberName || 'Lezec'} · {run.gym}
+                  </div>
+                  <div className="font-mono text-[10px] text-slate-400 mt-1">
+                    S1: {run.splits.split1.toFixed(2)}s · S2: {run.splits.split2.toFixed(2)}s · S3: {run.splits.split3.toFixed(2)}s
+                  </div>
                 </div>
-                <div className="text-[11px] text-slate-500 mt-0.5">
-                  {new Date(run.date).toLocaleDateString()} · {run.gym}
-                </div>
-                <div className="font-mono text-[10px] text-slate-400 mt-1">
-                  S1: {run.splits.split1.toFixed(2)}s · S2: {run.splits.split2.toFixed(2)}s · S3: {run.splits.split3.toFixed(2)}s
-                </div>
-              </div>
 
               <div className="flex items-center gap-2">
                 <button
@@ -240,7 +309,7 @@ export const LogbookModal: React.FC<LogbookModalProps> = ({
                 )}
               </div>
             </div>
-          ))}
+          )))}
         </div>
       </div>
 

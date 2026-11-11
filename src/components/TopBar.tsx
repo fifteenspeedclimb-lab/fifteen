@@ -4,11 +4,15 @@ import { RouteCategory } from '../types/climbing';
 import { Language, TRANSLATIONS } from '../utils/i18n';
 import { FifteenLogo } from './FifteenLogo';
 
+import { UserProfile } from '../utils/storage';
+
 interface TopBarProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
   onOpenLogbook: () => void;
   onOpenSettings: () => void;
+  onOpenAuth: () => void;
+  userProfile?: UserProfile;
   currentCategory: RouteCategory;
   onSelectCategory: (cat: RouteCategory) => void;
   lang: Language;
@@ -19,6 +23,8 @@ export const TopBar: React.FC<TopBarProps> = ({
   setActiveTab,
   onOpenLogbook,
   onOpenSettings,
+  onOpenAuth,
+  userProfile,
   currentCategory,
   onSelectCategory,
   lang,
@@ -95,8 +101,24 @@ export const TopBar: React.FC<TopBarProps> = ({
           </button>
         </div>
 
-        {/* Right Side: Logbook & Settings */}
-        <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0 z-10">
+        {/* Right Side: Account, Logbook & Settings */}
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 z-10">
+          <button
+            onClick={onOpenAuth}
+            aria-label="Profil lezce a přihlášení"
+            title={
+              userProfile?.isAuthenticated
+                ? `Přihlášen jako ${userProfile.name} (${userProfile.nationalityCode || 'CZE'})`
+                : 'Profil lezce & Přihlášení'
+            }
+            className="h-9 px-2.5 rounded-xl flex items-center gap-1.5 text-xs font-bold text-slate-200 hover:text-white bg-slate-900 border border-slate-800 transition-all active:scale-95 shadow-sm"
+          >
+            <span className="text-base leading-none">{userProfile?.flagEmoji || '🇨🇿'}</span>
+            <span className="hidden sm:inline max-w-[85px] truncate text-[11px]">
+              {userProfile?.name ? userProfile.name.split(' ')[0] : (lang === 'cs' ? 'Profil' : 'Profile')}
+            </span>
+          </button>
+
           <button
             onClick={onOpenLogbook}
             aria-label={t.logbookBtn}

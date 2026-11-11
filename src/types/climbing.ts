@@ -27,6 +27,8 @@ export interface SpeedRun {
   routeCategory: RouteCategory;
   gym: string;
   climberName: string;
+  nationalityCode?: string;
+  flagEmoji?: string;
   gender: 'men' | 'women';
   notes?: string;
   videoUrl?: string;
