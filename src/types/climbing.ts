@@ -26,6 +26,7 @@ export interface SpeedRun {
   betaUsed: 'standard' | 'tomoa-skip' | 'modern-dyno' | 'youth-flow';
   routeCategory: RouteCategory;
   gym: string;
+  climberId?: string;
   climberName: string;
   nationalityCode?: string;
   flagEmoji?: string;

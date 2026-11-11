@@ -36,6 +36,7 @@ import {
   playSplitChime,
   playFinishFanfare,
   playFalseStartAlarm,
+  speakIFSCCommand,
   getStoredAudioSettings,
 } from '../utils/audio';
 import { RouteCategory, SpeedRun } from '../types/climbing';
@@ -358,6 +359,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const playbackVideoRef = useRef<HTMLVideoElement | null>(null);
   const cameraContainerRef = useRef<HTMLDivElement | null>(null);
   const lastMotionUpdateRef = useRef<number>(0);
+  const countdownTimeoutsRef = useRef<NodeJS.Timeout[]>([]);
 
   // Instant mounting callback ref for foolproof video stream attachment
   const setVideoElement = useCallback((element: HTMLVideoElement | null) => {
@@ -534,31 +536,61 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     rafRef.current = requestAnimationFrame(updateTimer);
   }, [updateTimer, startMediaRecording]);
 
-  // Official IFSC Countdown Sequence
+  const clearCountdownTimeouts = useCallback(() => {
+    countdownTimeoutsRef.current.forEach((t) => clearTimeout(t));
+    countdownTimeoutsRef.current = [];
+  }, []);
+
+  // Official IFSC Countdown Sequence: "At your marks" -> "Ready" -> 3 Beeps -> Random hold -> High start beep
   const triggerIFSCCountdown = useCallback(() => {
     if (isRunning) return;
+    clearCountdownTimeouts();
     const audioConf = getStoredAudioSettings();
+
+    // 1. Starter calls: "At your marks"
     setCountdownState('marks');
+    speakIFSCCommand('marks');
     setElapsedMs(0);
     setFinishedRun(null);
     setShowDeleteVideoConfirm(false);
 
-    setTimeout(() => {
+    // 2. After athletes settle on the pad (~2.4s), starter calls: "Ready"
+    const tReady = setTimeout(() => {
       setCountdownState('ready');
-      setTimeout(() => playIFSCPrepTone(audioConf.toneStyle), 700);
-      setTimeout(() => playIFSCPrepTone(audioConf.toneStyle), 1700);
-      setTimeout(() => playIFSCPrepTone(audioConf.toneStyle), 2700);
+      speakIFSCCommand('ready');
 
-      const randomHold = 3700 + Math.random() * 200;
-      setTimeout(() => {
-        playIFSCStartTone(audioConf.toneStyle);
-        const reaction = 0.115 + Math.random() * 0.045;
-        startTimerNow(reaction);
-      }, randomHold);
-    }, 600);
-  }, [isRunning, startTimerNow]);
+      // 3. After 1.4s, electronic beeps begin (3x 1-second warning beeps)
+      const tBeeps = setTimeout(() => {
+        setCountdownState('beeps');
+        playIFSCPrepTone(audioConf.toneStyle); // 1st Beep
+
+        const tBeep2 = setTimeout(() => {
+          playIFSCPrepTone(audioConf.toneStyle); // 2nd Beep
+        }, 1000);
+
+        const tBeep3 = setTimeout(() => {
+          playIFSCPrepTone(audioConf.toneStyle); // 3rd Beep
+        }, 2000);
+
+        // Variable hold as per IFSC rules: 1000ms + random 100-250ms
+        const randomHold = 3000 + Math.random() * 200;
+        const tStart = setTimeout(() => {
+          playIFSCStartTone(audioConf.toneStyle);
+          const reaction = 0.115 + Math.random() * 0.045;
+          startTimerNow(reaction);
+        }, randomHold);
+
+        countdownTimeoutsRef.current.push(tBeep2, tBeep3, tStart);
+      }, 1400);
+
+      countdownTimeoutsRef.current.push(tBeeps);
+    }, 2400);
+
+    countdownTimeoutsRef.current.push(tReady);
+  }, [isRunning, startTimerNow, clearCountdownTimeouts]);
 
   const resetTimer = () => {
+    clearCountdownTimeouts();
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     startTimeRef.current = 0;
     setIsRunning(false);
@@ -1652,10 +1684,12 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                 )}
 
                 {countdownState !== 'idle' && countdownState !== 'started' && countdownState !== 'armed' && (
-                  <div className="mb-2 px-4 py-1 bg-amber-500 text-slate-950 font-black text-xs uppercase tracking-widest rounded-full shadow-lg">
-                    {countdownState === 'marks' && 'NA MÍSTA'}
-                    {countdownState === 'ready' && 'PŘIPRAVIT SE'}
-                    {countdownState === 'beeps' && 'ODPOČET...'}
+                  <div className="mb-2 px-5 py-1.5 bg-amber-500 text-slate-950 font-black text-xs sm:text-sm uppercase tracking-widest rounded-full shadow-lg flex items-center gap-2 animate-pulse">
+                    <span>
+                      {countdownState === 'marks' && '🏁 AT YOUR MARKS (NA MÍSTA)'}
+                      {countdownState === 'ready' && '⚡ READY (PŘIPRAVIT SE)'}
+                      {countdownState === 'beeps' && '🔊 3... 2... 1...'}
+                    </span>
                   </div>
                 )}
 
@@ -1706,11 +1740,11 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
           )}
 
           {countdownState !== 'idle' && countdownState !== 'started' && countdownState !== 'armed' && (
-            <div className="mb-2 inline-flex items-center gap-1.5 px-3 py-1 bg-amber-500/20 text-amber-300 border border-amber-500/50 font-bold text-xs uppercase tracking-wider rounded-full">
+            <div className="mb-2 inline-flex items-center gap-2 px-4 py-1.5 bg-amber-500 text-slate-950 font-black text-xs uppercase tracking-wider rounded-full shadow-md animate-pulse">
               <span>
-                {countdownState === 'marks' && 'NA MÍSTA'}
-                {countdownState === 'ready' && 'PŘIPRAVIT SE'}
-                {countdownState === 'beeps' && 'ODPOČET...'}
+                {countdownState === 'marks' && '🏁 AT YOUR MARKS (NA MÍSTA)'}
+                {countdownState === 'ready' && '⚡ READY (PŘIPRAVIT SE)'}
+                {countdownState === 'beeps' && '🔊 3... 2... 1...'}
               </span>
             </div>
           )}

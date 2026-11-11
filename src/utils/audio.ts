@@ -204,3 +204,48 @@ export function speakCoachCue(text: string, langCode: 'cs' | 'de' | 'en' = 'cs')
     console.warn('Speech synthesis error:', e);
   }
 }
+
+/**
+ * Official IFSC Starter Voice Commands: "At your marks" and "Ready"
+ */
+export function speakIFSCCommand(command: 'marks' | 'ready') {
+  const settings = getStoredAudioSettings();
+  const text = command === 'marks' ? 'At your marks' : 'Ready';
+
+  // Subtle acoustic cue ensuring prompt is always heard even if TTS is muted/pending
+  try {
+    const ctx = getAudioContext();
+    if (command === 'marks') {
+      playTone(520, 0.15, 'sine', settings.volume * 0.4);
+    } else {
+      playTone(660, 0.12, 'sine', settings.volume * 0.45);
+    }
+  } catch {
+    // ignore
+  }
+
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+  if (!settings.voiceEnabled) return;
+
+  try {
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'en-US';
+    utterance.volume = Math.min(1.0, settings.volume * 1.2);
+    utterance.pitch = command === 'marks' ? 0.95 : 1.05;
+    utterance.rate = command === 'marks' ? 0.95 : 1.1;
+
+    const voices = window.speechSynthesis.getVoices();
+    const englishVoice = voices.find(
+      (v) => v.lang.toLowerCase().startsWith('en') && (v.name.includes('Male') || v.name.includes('David') || v.name.includes('Natural'))
+    ) || voices.find((v) => v.lang.toLowerCase().startsWith('en'));
+
+    if (englishVoice) {
+      utterance.voice = englishVoice;
+    }
+
+    window.speechSynthesis.speak(utterance);
+  } catch (e) {
+    console.warn('Starter voice error:', e);
+  }
+}

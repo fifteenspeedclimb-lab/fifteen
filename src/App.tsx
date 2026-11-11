@@ -13,7 +13,6 @@ import { TrainingRoutines } from './components/TrainingRoutines';
 import { Leaderboards } from './components/Leaderboards';
 import { LogbookModal } from './components/LogbookModal';
 import { AiAnalysisModal } from './components/AiAnalysisModal';
-import { CloudSyncModal } from './components/CloudSyncModal';
 import { LegalModal } from './components/LegalModal';
 import { SettingsModal } from './components/SettingsModal';
 import { AuthModal } from './components/AuthModal';
@@ -33,7 +32,6 @@ export default function App() {
   // Modals
   const [showSettings, setShowSettings] = useState<boolean>(false);
   const [showLogbook, setShowLogbook] = useState<boolean>(false);
-  const [showCloudSync, setShowCloudSync] = useState<boolean>(false);
   const [showLegal, setShowLegal] = useState<boolean>(false);
   const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
   const [analyzingRun, setAnalyzingRun] = useState<SpeedRun | null>(null);
@@ -189,14 +187,6 @@ export default function App() {
         />
       )}
 
-      {/* Cloud Sync & Auth Modal */}
-      {showCloudSync && (
-        <CloudSyncModal
-          onClose={() => setShowCloudSync(false)}
-          lang={lang}
-        />
-      )}
-
       {/* Legal & Compliance Modal */}
       {showLegal && (
         <LegalModal
@@ -205,7 +195,7 @@ export default function App() {
         />
       )}
 
-      {/* Unified Settings Modal (Language, Theme, Audio tones, Athlete Profile, Cloud, Legal) */}
+      {/* Unified Settings Modal (Language, Theme, Audio tones, Athlete Profile, Legal) */}
       {showSettings && (
         <SettingsModal
           onClose={() => setShowSettings(false)}
@@ -213,7 +203,6 @@ export default function App() {
           onSelectLang={handleLanguageChange}
           isDark={isDark}
           setIsDark={setIsDark}
-          onOpenCloudSync={() => setShowCloudSync(true)}
           onOpenLegal={() => setShowLegal(true)}
           onOpenAuth={() => {
             setShowSettings(false);

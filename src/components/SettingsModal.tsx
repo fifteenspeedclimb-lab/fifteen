@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Settings, Volume2, Moon, Sun, Globe, Shield, Play, Check, Cloud } from 'lucide-react';
+import { Settings, Volume2, Moon, Sun, Globe, Shield, Play, Check, Users, User } from 'lucide-react';
 import { Language, TRANSLATIONS } from '../utils/i18n';
 import {
   ToneStyle,
@@ -18,7 +18,6 @@ interface SettingsModalProps {
   onSelectLang: (lang: Language) => void;
   isDark: boolean;
   setIsDark: (dark: boolean) => void;
-  onOpenCloudSync: () => void;
   onOpenLegal: () => void;
   onOpenAuth: () => void;
   userProfile?: UserProfile;
@@ -30,7 +29,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onSelectLang,
   isDark,
   setIsDark,
-  onOpenCloudSync,
   onOpenLegal,
   onOpenAuth,
   userProfile,
@@ -249,12 +247,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <button
             onClick={() => {
               onClose();
-              onOpenCloudSync();
+              onOpenAuth();
             }}
             className="p-2.5 bg-slate-50 dark:bg-slate-950 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-800 text-center transition-colors flex items-center justify-center gap-2"
           >
-            <Cloud className="w-4 h-4 text-blue-500" />
-            <div className="text-xs font-bold text-slate-900 dark:text-white">Cloud synchronizace</div>
+            <Users className="w-4 h-4 text-red-500" />
+            <div className="text-xs font-bold text-slate-900 dark:text-white">Přepnout / Přidat lezce</div>
           </button>
 
           <button

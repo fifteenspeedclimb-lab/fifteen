@@ -105,17 +105,19 @@ export const TopBar: React.FC<TopBarProps> = ({
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 z-10">
           <button
             onClick={onOpenAuth}
-            aria-label="Profil lezce a přihlášení"
-            title={
-              userProfile?.isAuthenticated
-                ? `Přihlášen jako ${userProfile.name} (${userProfile.nationalityCode || 'CZE'})`
-                : 'Profil lezce & Přihlášení'
-            }
-            className="h-9 px-2.5 rounded-xl flex items-center gap-1.5 text-xs font-bold text-slate-200 hover:text-white bg-slate-900 border border-slate-800 transition-all active:scale-95 shadow-sm"
+            aria-label="Profil lezce a přepínač účtů"
+            title={`Aktivní lezec: ${userProfile?.name || 'Lezec'} (${userProfile?.nationalityCode || 'CZE'}) – Kliknutím přepnete lezce`}
+            className="h-9 px-2.5 rounded-xl flex items-center gap-1.5 text-xs font-bold text-slate-200 hover:text-white bg-slate-900 border border-slate-800 hover:border-red-500/50 transition-all active:scale-95 shadow-sm group"
           >
-            <span className="text-base leading-none">{userProfile?.flagEmoji || '🇨🇿'}</span>
-            <span className="hidden sm:inline max-w-[85px] truncate text-[11px]">
-              {userProfile?.name ? userProfile.name.split(' ')[0] : (lang === 'cs' ? 'Profil' : 'Profile')}
+            <div
+              style={{ backgroundColor: userProfile?.avatarColor || '#ef4444' }}
+              className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black text-white shrink-0 shadow-sm"
+            >
+              {userProfile?.name ? userProfile.name[0].toUpperCase() : 'L'}
+            </div>
+            <span className="text-sm leading-none">{userProfile?.flagEmoji || '🇨🇿'}</span>
+            <span className="hidden sm:inline max-w-[90px] truncate text-[11px] font-bold text-slate-200 group-hover:text-white">
+              {userProfile?.name ? userProfile.name.split(' ')[0] : (lang === 'cs' ? 'Lezec' : 'Climber')}
             </span>
           </button>
 
