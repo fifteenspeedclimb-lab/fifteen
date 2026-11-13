@@ -130,7 +130,7 @@ export default function App() {
           />
         )}
 
-        {activeTab === 'ghost' && <GhostAudioPacer lang={lang} />}
+        {activeTab === 'ghost' && <GhostAudioPacer lang={lang} currentCategory={currentCategory} />}
 
         {activeTab === 'training' && <TrainingRoutines lang={lang} />}
 
@@ -141,6 +141,7 @@ export default function App() {
             onRunsChanged={handleRunsChanged}
             userProfile={profile}
             onOpenAuth={() => setShowAuthModal(true)}
+            currentCategory={currentCategory}
           />
         )}
       </main>
@@ -159,6 +160,7 @@ export default function App() {
           }}
           onRunsChanged={handleRunsChanged}
           lang={lang}
+          currentCategory={currentCategory}
         />
       )}
 

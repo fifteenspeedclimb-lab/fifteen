@@ -9,24 +9,23 @@ export const FifteenLogo: React.FC<FifteenLogoProps> = ({
   className = '',
   size = 'md',
 }) => {
-  // Height presets enlarged by a third (+33%) for bold athletic presence
   const heightStyles = {
-    sm: 'h-9 sm:h-12',
-    md: 'h-11 xs:h-13 sm:h-15 md:h-16',
-    lg: 'h-15 sm:h-19 md:h-22',
-    xl: 'h-20 sm:h-26 md:h-30',
+    sm: 'h-7 xs:h-8 sm:h-10',
+    md: 'h-9 sm:h-11 lg:h-12',
+    lg: 'h-14 sm:h-18 md:h-20',
+    xl: 'h-20 sm:h-24 md:h-28',
   };
 
   return (
     <div
-      className={`inline-flex items-center justify-center select-none transition-transform hover:scale-[1.02] active:scale-98 ${className}`}
+      className={`inline-flex items-center justify-center select-none transition-transform hover:scale-[1.02] active:scale-98 max-w-full ${className}`}
       title="FIFTEEN – Speed Climbing App"
     >
       {/* Official Transparent PNG Brand Logo (New 2026 Asset) */}
       <img
         src="/assets/aistudio/Logo_fb76e3be.png"
         alt="FIFTEEN Speed Climbing App"
-        className={`${heightStyles[size]} w-auto object-contain max-w-[220px] xs:max-w-[270px] sm:max-w-[360px] drop-shadow-sm`}
+        className={`${heightStyles[size]} w-auto max-w-full object-contain drop-shadow-sm`}
         loading="eager"
       />
     </div>

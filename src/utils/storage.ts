@@ -1,4 +1,4 @@
-import { SpeedRun } from '../types/climbing';
+import { RouteCategory, SpeedRun } from '../types/climbing';
 
 const STORAGE_KEY = 'speedpeak_runs_v1';
 const PROFILE_KEY = 'speedpeak_profile_v1';
@@ -14,6 +14,7 @@ export interface UserProfile {
   gender: 'men' | 'women';
   homeGym: string;
   personalBest: number;
+  personalBestByCategory?: Partial<Record<RouteCategory, number>>;
   targetGoal: number;
   favoriteBeta: 'standard' | 'tomoa-skip' | 'modern-dyno' | 'youth-flow';
   nationality: string;
@@ -31,6 +32,7 @@ export const DEFAULT_PROFILE: UserProfile = {
   gender: 'men',
   homeGym: '',
   personalBest: 0,
+  personalBestByCategory: {},
   targetGoal: 5.500,
   favoriteBeta: 'standard',
   nationality: 'Česká republika',
@@ -39,6 +41,22 @@ export const DEFAULT_PROFILE: UserProfile = {
   isAuthenticated: true,
   isDemoUser: false,
 };
+
+export function getBestTimeForCategory(
+  runs: SpeedRun[],
+  climberIdOrName: string,
+  category: RouteCategory
+): number {
+  const valid = runs.filter(
+    (r) =>
+      !r.isFalseStart &&
+      r.totalTime > 0 &&
+      r.routeCategory === category &&
+      (!climberIdOrName || r.climberId === climberIdOrName || r.climberName === climberIdOrName)
+  );
+  if (valid.length === 0) return 0;
+  return Math.min(...valid.map((r) => r.totalTime));
+}
 
 export function getStoredRuns(): SpeedRun[] {
   if (typeof window === 'undefined') return [];
@@ -75,11 +93,12 @@ export function saveRun(run: SpeedRun): SpeedRun[] {
   const flagEmoji = run.flagEmoji || profile.flagEmoji || '🇨🇿';
   const nationalityCode = run.nationalityCode || profile.nationalityCode || 'CZE';
 
-  // Calculate if it is a personal best for THIS climber
+  // Calculate if it is a personal best for THIS climber AND THIS route category
   const validRuns = currentRuns.filter(
     (r) =>
       !r.isFalseStart &&
       r.totalTime > 0 &&
+      r.routeCategory === run.routeCategory &&
       (r.climberId === climberId || r.climberName === climberName)
   );
   const currentBest =
@@ -101,7 +120,7 @@ export function saveRun(run: SpeedRun): SpeedRun[] {
   if (typeof window !== 'undefined') {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedList));
     if (isPb) {
-      updateProfilePB(run.totalTime);
+      updateProfilePB(run.totalTime, run.routeCategory);
     }
   }
   return updatedList;
@@ -313,10 +332,27 @@ export function logoutUserProfile(): UserProfile {
   return updated;
 }
 
-function updateProfilePB(newPb: number): void {
+function updateProfilePB(newPb: number, category: RouteCategory): void {
   const profile = getUserProfile();
-  if (profile.personalBest === 0 || newPb < profile.personalBest) {
+  const byCat = { ...(profile.personalBestByCategory || {}) };
+  const prevCatPb = byCat[category] || 0;
+  let changed = false;
+
+  if (prevCatPb === 0 || newPb < prevCatPb) {
+    byCat[category] = newPb;
+    profile.personalBestByCategory = byCat;
+    changed = true;
+  }
+
+  if (category === 'adults_15m' && (profile.personalBest === 0 || newPb < profile.personalBest)) {
     profile.personalBest = newPb;
+    changed = true;
+  } else if (profile.personalBest === 0) {
+    profile.personalBest = newPb;
+    changed = true;
+  }
+
+  if (changed) {
     saveUserProfile(profile);
   }
 }

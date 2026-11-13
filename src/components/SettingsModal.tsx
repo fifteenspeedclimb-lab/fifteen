@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
-import { Settings, Volume2, Moon, Sun, Globe, Shield, Play, Check, Users, User } from 'lucide-react';
-import { Language, TRANSLATIONS } from '../utils/i18n';
+import { Volume2, VolumeX, Moon, Sun, Globe, Shield, Play, Check, Users, Mic } from 'lucide-react';
+import { Language } from '../utils/i18n';
 import {
   ToneStyle,
   getStoredAudioSettings,
   saveStoredAudioSettings,
   playIFSCPrepTone,
   playIFSCStartTone,
+  speakIFSCCommand,
 } from '../utils/audio';
 import { FifteenAppIcon } from './FifteenLogo';
 
@@ -51,16 +52,35 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     playIFSCStartTone(audioSettings.toneStyle);
   };
 
+  const handleVoiceToggle = () => {
+    const nextEnabled = !audioSettings.voiceEnabled;
+    const updated = { ...audioSettings, voiceEnabled: nextEnabled };
+    setAudioSettings(updated);
+    saveStoredAudioSettings(updated);
+    if (nextEnabled) {
+      speakIFSCCommand('marks');
+    } else if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+  };
+
   const runTestBeeps = () => {
     if (isPlayingTest) return;
     setIsPlayingTest(true);
-    playIFSCPrepTone(audioSettings.toneStyle);
-    setTimeout(() => playIFSCPrepTone(audioSettings.toneStyle), 1000);
-    setTimeout(() => playIFSCPrepTone(audioSettings.toneStyle), 2000);
+    const delayOffset = audioSettings.voiceEnabled ? 2500 : 0;
+
+    if (audioSettings.voiceEnabled) {
+      speakIFSCCommand('marks');
+      setTimeout(() => speakIFSCCommand('ready'), 1400);
+    }
+
+    setTimeout(() => playIFSCPrepTone(audioSettings.toneStyle), delayOffset);
+    setTimeout(() => playIFSCPrepTone(audioSettings.toneStyle), delayOffset + 1000);
+    setTimeout(() => playIFSCPrepTone(audioSettings.toneStyle), delayOffset + 2000);
     setTimeout(() => {
       playIFSCStartTone(audioSettings.toneStyle);
       setIsPlayingTest(false);
-    }, 3000);
+    }, delayOffset + 3000);
   };
 
   return (
@@ -219,7 +239,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           {/* Stepped Volume Selector - NO SLIDER */}
           <div className="flex items-center justify-between pt-1 text-xs">
-            <span className="text-slate-500 font-medium">Hlasitost pípnutí:</span>
+            <span className="text-slate-500 font-medium">
+              {lang === 'cs' ? 'Hlasitost pípnutí:' : lang === 'de' ? 'Signallautstärke:' : 'Beep volume:'}
+            </span>
             <div className="flex items-center gap-1 p-0.5 bg-slate-100 dark:bg-slate-950 rounded-lg border border-slate-200 dark:border-slate-800">
               {[
                 { val: 0.5, label: '50%' },
@@ -239,6 +261,54 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* Voice Commands Toggle (IFSC "At your marks" / "Ready" & Coach) */}
+          <div className="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 mt-1">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div
+                className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                  audioSettings.voiceEnabled
+                    ? 'bg-red-600/15 text-red-600 dark:text-red-400'
+                    : 'bg-slate-200 dark:bg-slate-800 text-slate-400'
+                }`}
+              >
+                {audioSettings.voiceEnabled ? <Mic className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-slate-900 dark:text-white">
+                  {lang === 'cs'
+                    ? 'Hlasové povely startéra'
+                    : lang === 'de'
+                    ? 'Sprachkommandos beim Start'
+                    : 'Starter voice commands'}
+                </div>
+                <div className="text-[11px] text-slate-500 truncate">
+                  {lang === 'cs'
+                    ? '„At your marks“ a „Ready“ před startovním pípáním'
+                    : '“At your marks” and “Ready” before countdown beeps'}
+                </div>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleVoiceToggle}
+              aria-pressed={audioSettings.voiceEnabled}
+              className={`min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 border ${
+                audioSettings.voiceEnabled
+                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500 shadow-sm'
+                  : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700'
+              }`}
+            >
+              {audioSettings.voiceEnabled
+                ? lang === 'cs'
+                  ? 'Zapnuto'
+                  : 'On'
+                : lang === 'cs'
+                ? 'Vypnuto'
+                : 'Off'}
+            </button>
           </div>
         </div>
 

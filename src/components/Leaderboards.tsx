@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Trophy,
   Plus,
@@ -16,9 +16,9 @@ import {
   Clock,
   AlertTriangle
 } from 'lucide-react';
-import { getUserProfile, getStoredRuns, saveRun, deleteRun, clearDemoRuns, clearAllRuns, UserProfile } from '../utils/storage';
+import { getUserProfile, getStoredRuns, saveRun, deleteRun, clearDemoRuns, clearAllRuns, getBestTimeForCategory, UserProfile } from '../utils/storage';
 import { Language, TRANSLATIONS } from '../utils/i18n';
-import { SpeedRun } from '../types/climbing';
+import { RouteCategory, SpeedRun } from '../types/climbing';
 
 interface LeaderboardEntry {
   id: string;
@@ -252,7 +252,15 @@ interface LeaderboardsProps {
   onRunsChanged?: (runs: SpeedRun[]) => void;
   userProfile?: UserProfile;
   onOpenAuth?: () => void;
+  currentCategory?: RouteCategory;
 }
+
+const getCategoryShort = (cat: RouteCategory | 'all') => {
+  if (cat === 'youth_u15') return '10m U15';
+  if (cat === 'youth_u13') return '10m U13';
+  if (cat === 'adults_15m') return '15m Dospělí';
+  return 'Vše';
+};
 
 export const Leaderboards: React.FC<LeaderboardsProps> = ({
   lang = 'cs',
@@ -260,6 +268,7 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({
   onRunsChanged,
   userProfile: propUserProfile,
   onOpenAuth,
+  currentCategory = 'adults_15m',
 }) => {
   const profile = propUserProfile || getUserProfile();
   const t = TRANSLATIONS[lang];
@@ -267,20 +276,34 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({
 
   const [activeMainTab, setActiveMainTab] = useState<'leaderboard' | 'history'>('history');
   const [genderFilter, setGenderFilter] = useState<'men' | 'women'>('men');
-  const [categoryFilter, setCategoryFilter] = useState<'all' | 'adults_15m' | 'youth_u15' | 'youth_u13'>('all');
+  const [categoryFilter, setCategoryFilter] = useState<'all' | RouteCategory>(currentCategory);
   const [venueFilter, setVenueFilter] = useState<string>('all');
   const [showSubmitModal, setShowSubmitModal] = useState<boolean>(false);
   const [showClearConfirm, setShowClearConfirm] = useState<boolean>(false);
 
+  useEffect(() => {
+    setCategoryFilter(currentCategory);
+  }, [currentCategory]);
+
+  // Runs filtered by active category filter for History, Calendar & Graph
+  const historyRuns = useMemo(() => {
+    if (categoryFilter === 'all') return userRuns;
+    return userRuns.filter((r) => r.routeCategory === categoryFilter);
+  }, [userRuns, categoryFilter]);
+
   // Determine initial calendar month and year based on runs or current date
   const initialCalendarDate = useMemo(() => {
+    if (historyRuns.length > 0) {
+      const d = new Date(historyRuns[0].date);
+      if (!isNaN(d.getTime())) return { year: d.getFullYear(), month: d.getMonth() };
+    }
     if (userRuns.length > 0) {
       const d = new Date(userRuns[0].date);
       if (!isNaN(d.getTime())) return { year: d.getFullYear(), month: d.getMonth() };
     }
     const now = new Date();
     return { year: now.getFullYear(), month: now.getMonth() };
-  }, [userRuns]);
+  }, [historyRuns, userRuns]);
 
   const [calendarYear, setCalendarYear] = useState<number>(initialCalendarDate.year);
   const [calendarMonth, setCalendarMonth] = useState<number>(initialCalendarDate.month); // 0-11
@@ -289,17 +312,22 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({
   // Submission Form State
   const [subName, setSubName] = useState<string>(profile.name);
   const [subTime, setSubTime] = useState<string>('');
-  const [subGym, setSubGym] = useState<string>('Big Wall Praha (15m)');
+  const [subGym, setSubGym] = useState<string>(profile.homeGym || 'Big Wall Praha (15m)');
   const [subEvent, setSubEvent] = useState<string>('Oficiální tréninkový výlez Fifteen');
-  const [subCategory, setSubCategory] = useState<'adults_15m' | 'youth_u15' | 'youth_u13'>('adults_15m');
+  const [subCategory, setSubCategory] = useState<RouteCategory>(currentCategory);
   const [customSubmittedEntries, setCustomSubmittedEntries] = useState<LeaderboardEntry[]>([]);
 
-  // Dynamic user entry for IFSC leaderboard
+  useEffect(() => {
+    setSubCategory(currentCategory);
+  }, [currentCategory]);
+
+  // Dynamic user entry for IFSC leaderboard matching active categoryFilter
   const dynamicUserEntry = useMemo<LeaderboardEntry | null>(() => {
-    const validRuns = userRuns.filter((r) => !r.isFalseStart);
+    const validRuns = userRuns.filter(
+      (r) => !r.isFalseStart && (categoryFilter === 'all' ? true : r.routeCategory === categoryFilter)
+    );
     if (validRuns.length === 0) return null;
 
-    // Pick best run
     const bestRun = [...validRuns].sort((a, b) => a.totalTime - b.totalTime)[0];
     return {
       id: 'active-user-best',
@@ -313,12 +341,12 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({
       totalTime: bestRun.totalTime,
       splits: bestRun.splits,
       gym: bestRun.gym,
-      event: 'Nejlepší osobní výkon Fifteen',
+      event: `Nejlepší výkon (${getCategoryShort(bestRun.routeCategory)})`,
       date: bestRun.date.split('T')[0],
       isVerified: true,
       isUser: true,
     };
-  }, [userRuns, profile]);
+  }, [userRuns, profile, categoryFilter, lang]);
 
   // Filtered leaderboard entries including dynamic user entry
   const filteredEntries = useMemo(() => {
@@ -334,16 +362,14 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({
       .sort((a, b) => a.totalTime - b.totalTime);
   }, [genderFilter, categoryFilter, venueFilter, customSubmittedEntries, dynamicUserEntry]);
 
-  // Calendar days computation for active calendarYear & calendarMonth
+  // Calendar days computation for active calendarYear & calendarMonth (scoped to historyRuns)
   const calendarData = useMemo(() => {
     const totalDaysInMonth = new Date(calendarYear, calendarMonth + 1, 0).getDate();
     const firstDayIndex = new Date(calendarYear, calendarMonth, 1).getDay(); // 0 is Sunday
-    // Convert to Monday = 0, Sunday = 6
     const offsetDays = (firstDayIndex + 6) % 7;
 
-    // Group user runs by 'YYYY-MM-DD'
     const runsByDate: Record<string, SpeedRun[]> = {};
-    userRuns.forEach((r) => {
+    historyRuns.forEach((r) => {
       const dateKey = r.date.split('T')[0];
       if (!runsByDate[dateKey]) runsByDate[dateKey] = [];
       runsByDate[dateKey].push(r);
@@ -352,8 +378,7 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({
     const monthStr = String(calendarMonth + 1).padStart(2, '0');
     const days = [];
 
-    // All-time best run among user runs for PB highlight
-    const validRuns = userRuns.filter((r) => !r.isFalseStart);
+    const validRuns = historyRuns.filter((r) => !r.isFalseStart);
     const allTimeBest = validRuns.length > 0 ? Math.min(...validRuns.map((r) => r.totalTime)) : null;
 
     let activeDaysCount = 0;
@@ -396,17 +421,17 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({
       activeDaysCount,
       totalRunsThisMonth,
     };
-  }, [calendarYear, calendarMonth, userRuns]);
+  }, [calendarYear, calendarMonth, historyRuns]);
 
   // Selected date runs
   const selectedDateRuns = useMemo(() => {
     if (!selectedCalendarDate) return [];
-    return userRuns.filter((r) => r.date.startsWith(selectedCalendarDate));
-  }, [selectedCalendarDate, userRuns]);
+    return historyRuns.filter((r) => r.date.startsWith(selectedCalendarDate));
+  }, [selectedCalendarDate, historyRuns]);
 
   // Real Progression Curve Points
   const progressionData = useMemo(() => {
-    const valid = userRuns
+    const valid = historyRuns
       .filter((r) => !r.isFalseStart && r.totalTime > 0)
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
@@ -417,8 +442,6 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({
     const maxTime = Math.max(...times);
     const timeRange = Math.max(0.5, maxTime - minTime);
 
-    // SVG coordinate mapping (width 500, height 120, padding x 30, padding y 20)
-    // In speed climbing, lower time is BETTER (higher up on chart)
     const svgWidth = 500;
     const svgHeight = 120;
     const padX = 35;
@@ -426,7 +449,6 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({
 
     const points = valid.map((run, idx) => {
       const x = valid.length === 1 ? svgWidth / 2 : padX + (idx / (valid.length - 1)) * (svgWidth - padX * 2);
-      // Normalized: minTime -> padY (top), maxTime -> svgHeight - padY (bottom)
       const normalized = (run.totalTime - minTime) / timeRange;
       const y = padY + normalized * (svgHeight - padY * 2);
       return {
@@ -455,31 +477,36 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({
       count: valid.length,
       bestRun: valid.reduce((best, cur) => (cur.totalTime < best.totalTime ? cur : best), valid[0]),
     };
-  }, [userRuns]);
+  }, [historyRuns]);
 
-  // Overall metrics calculated from REAL runs
+  // Overall metrics calculated from REAL runs matching categoryFilter
   const metrics = useMemo(() => {
-    const valid = userRuns.filter((r) => !r.isFalseStart);
-    const bestTime = valid.length > 0 ? Math.min(...valid.map((r) => r.totalTime)) : profile.personalBest;
-    const totalRuns = userRuns.length;
-    const falseStarts = userRuns.filter((r) => r.isFalseStart).length;
+    const valid = historyRuns.filter((r) => !r.isFalseStart && r.totalTime > 0);
+    const fallbackPb =
+      categoryFilter === 'all'
+        ? profile.personalBest
+        : profile.personalBestByCategory?.[categoryFilter] ||
+          (categoryFilter === 'adults_15m' ? profile.personalBest : 0);
+    const bestTime = valid.length > 0 ? Math.min(...valid.map((r) => r.totalTime)) : fallbackPb;
+    const totalRuns = historyRuns.length;
+    const falseStarts = historyRuns.filter((r) => r.isFalseStart).length;
     const successRate = totalRuns > 0 ? (((totalRuns - falseStarts) / totalRuns) * 100).toFixed(1) : '100.0';
 
-    const reactionRuns = userRuns.filter((r) => r.reactionTime && r.reactionTime > 0.05);
+    const reactionRuns = historyRuns.filter((r) => r.reactionTime && r.reactionTime > 0.05);
     const avgReaction =
       reactionRuns.length > 0
         ? (reactionRuns.reduce((sum, r) => sum + r.reactionTime, 0) / reactionRuns.length).toFixed(3)
-        : '0.142';
+        : '—';
 
     return {
-      bestTime: bestTime.toFixed(3),
+      bestTime: bestTime > 0 ? `${bestTime.toFixed(3)}s` : '—',
       activeDays: calendarData.activeDaysCount,
       totalRunsThisMonth: calendarData.totalRunsThisMonth,
       totalRunsAllTime: totalRuns,
-      avgReaction,
+      avgReaction: avgReaction === '—' ? '—' : `${avgReaction}s`,
       successRate,
     };
-  }, [userRuns, profile.personalBest, calendarData]);
+  }, [historyRuns, profile.personalBest, profile.personalBestByCategory, categoryFilter, calendarData]);
 
   // Month navigation handlers
   const handlePrevMonth = () => {
@@ -561,7 +588,7 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({
 
     setCustomSubmittedEntries((prev) => [newEntry, ...prev]);
 
-    // Also persist into user speed runs
+    const currentCategoryBest = getBestTimeForCategory(userRuns, profile.id, subCategory);
     const newRun: SpeedRun = {
       id: 'manual-' + Date.now(),
       date: new Date().toISOString(),
@@ -572,12 +599,13 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({
       betaUsed: 'standard',
       routeCategory: subCategory,
       gym: subGym,
+      climberId: profile.id,
       climberName: subName,
       gender: profile.gender,
       nationalityCode: profile.nationalityCode,
       flagEmoji: profile.flagEmoji,
       cloudSyncStatus: 'synced_gdrive',
-      isPersonalBest: timeNum < profile.personalBest,
+      isPersonalBest: currentCategoryBest === 0 || timeNum < currentCategoryBest,
     };
 
     saveRun(newRun);
@@ -767,7 +795,13 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({
                     <th className="py-3 px-3 sm:px-4 w-12 text-center">#</th>
                     <th className="py-3 px-3 sm:px-4">Lezec & Národnost</th>
                     <th className="py-3 px-3 sm:px-4">Čas</th>
-                    <th className="py-3 px-3 sm:px-4 hidden md:table-cell">Mezičasy (5m / 10m / 15m)</th>
+                    <th className="py-3 px-3 sm:px-4 hidden md:table-cell">
+                      {categoryFilter === 'youth_u15' || categoryFilter === 'youth_u13'
+                        ? 'Mezičasy (3.3m / 6.6m / 10m)'
+                        : categoryFilter === 'adults_15m'
+                        ? 'Mezičasy (5m / 10m / 15m)'
+                        : 'Mezičasy (S1 / S2 / S3)'}
+                    </th>
                     <th className="py-3 px-3 sm:px-4 hidden sm:table-cell">Lokalita / Akce</th>
                     <th className="py-3 px-3 sm:px-4 hidden lg:table-cell">Datum</th>
                   </tr>
@@ -847,48 +881,80 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({
       {/* VIEW 2: TRAINING CALENDAR & ANALYTICS GRAPH (100% REAL DATA) */}
       {activeMainTab === 'history' && (
         <div className="space-y-4">
-          {/* Action Toolbar for Data Management */}
-          <div className="flex flex-wrap items-center justify-between gap-2 p-3 bg-slate-100 dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 text-xs">
-            <div className="flex items-center gap-2">
-              <span className="font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
-                <span className="text-base">{profile.flagEmoji}</span>
-                <span>{profile.name || (lang === 'cs' ? 'Můj profil' : 'My profile')}</span>
-                <span className="text-slate-400">({userRuns.length} výlezů)</span>
-              </span>
+          {/* Action Toolbar & Category Filter for Data Management */}
+          <div className="flex flex-col gap-2.5 p-3 bg-slate-100 dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                  <span className="text-base">{profile.flagEmoji}</span>
+                  <span>{profile.name || (lang === 'cs' ? 'Můj profil' : 'My profile')}</span>
+                  <span className="text-slate-400">
+                    ({historyRuns.length} výlezů · {getCategoryShort(categoryFilter)})
+                  </span>
+                </span>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {userRuns.length > 0 && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handleExportRunsCsv}
+                      className="px-2.5 py-1 rounded-xl bg-white dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 transition-colors font-bold flex items-center gap-1 text-[11px]"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Export CSV</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowClearConfirm(true)}
+                      className="px-2.5 py-1 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 border border-red-500/30 transition-colors font-bold flex items-center gap-1 text-[11px]"
+                      title="Smazat všechny zaznamenané výkony"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Smazat historii</span>
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
-              {userRuns.length > 0 && (
-                <>
-                  <button
-                    type="button"
-                    onClick={handleExportRunsCsv}
-                    className="px-2.5 py-1 rounded-xl bg-white dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 transition-colors font-bold flex items-center gap-1 text-[11px]"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Export CSV</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setShowClearConfirm(true)}
-                    className="px-2.5 py-1 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 border border-red-500/30 transition-colors font-bold flex items-center gap-1 text-[11px]"
-                    title="Smazat všechny zaznamenané výkony"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>Smazat historii</span>
-                  </button>
-                </>
-              )}
+            {/* Category switcher inside Calendar & Graphs */}
+            <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-1 border-t border-slate-200/70 dark:border-slate-800">
+              {([
+                { id: 'adults_15m', label: '15m Dospělí' },
+                { id: 'youth_u15', label: '10m U15' },
+                { id: 'youth_u13', label: '10m U13' },
+                { id: 'all', label: 'Všechny kategorie' },
+              ] as const).map((cat) => (
+                <button
+                  key={cat.id}
+                  type="button"
+                  onClick={() => {
+                    setCategoryFilter(cat.id);
+                    setSelectedCalendarDate(null);
+                  }}
+                  className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-colors shrink-0 ${
+                    categoryFilter === cat.id
+                      ? 'bg-red-600 text-white shadow-sm'
+                      : 'bg-white dark:bg-slate-950 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-800'
+                  }`}
+                >
+                  {cat.label}
+                </button>
+              ))}
             </div>
           </div>
 
           {/* Quick Metrics Bar from REAL Runs */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3">
             <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
-              <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">Osobní rekord (PB)</span>
+              <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
+                Osobní rekord ({getCategoryShort(categoryFilter)})
+              </span>
               <span className="text-xl sm:text-2xl font-mono font-black text-red-600 dark:text-red-400 mt-0.5 block">
-                {metrics.bestTime}s
+                {metrics.bestTime}
               </span>
               <span className="text-[10px] text-slate-400 font-semibold mt-0.5 block truncate">
                 {profile.name} · {profile.nationalityCode}
@@ -908,7 +974,7 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({
             <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
               <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">Průměrná reakce</span>
               <span className="text-xl sm:text-2xl font-mono font-black text-amber-500 mt-0.5 block">
-                {metrics.avgReaction}s
+                {metrics.avgReaction}
               </span>
               <span className="text-[10px] text-slate-400 block mt-0.5">IFSC limit DQ: &lt; 0.100s</span>
             </div>
@@ -919,7 +985,7 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({
                 {metrics.successRate}%
               </span>
               <span className="text-[10px] text-slate-400 block mt-0.5">
-                {metrics.totalRunsAllTime} výlezů celkově
+                {metrics.totalRunsAllTime} výlezů v kategorii
               </span>
             </div>
           </div>
@@ -930,7 +996,7 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({
               <div className="flex items-center gap-2">
                 <TrendingUp className="w-5 h-5 text-red-600" />
                 <h3 className="font-display font-bold text-base text-slate-900 dark:text-white">
-                  Křivka rychlostního progresu (Čas v sekundách)
+                  Křivka progresu – {getCategoryShort(categoryFilter)} (Čas v sekundách)
                 </h3>
               </div>
               <span className="text-xs text-slate-400 font-mono">
@@ -1154,13 +1220,15 @@ export const Leaderboards: React.FC<LeaderboardsProps> = ({
                           </span>
                         )}
                         <span className="text-slate-500 font-medium">
-                          {run.routeCategory === 'adults_15m' ? '15m' : '10m'} · {run.gym}
+                          {getCategoryShort(run.routeCategory)} · {run.gym}
                         </span>
                       </div>
 
                       <div className="flex items-center gap-3">
                         <span className="text-[11px] font-mono text-slate-400">
-                          Mezičasy: {run.splits.split1.toFixed(2)}s / {run.splits.split2.toFixed(2)}s / {run.splits.split3.toFixed(2)}s
+                          {run.routeCategory === 'adults_15m'
+                            ? `5m: ${run.splits.split1.toFixed(2)}s / 10m: ${run.splits.split2.toFixed(2)}s / 15m: ${run.splits.split3.toFixed(2)}s`
+                            : `3.3m: ${run.splits.split1.toFixed(2)}s / 6.6m: ${run.splits.split2.toFixed(2)}s / 10m: ${run.splits.split3.toFixed(2)}s`}
                         </span>
                         <button
                           type="button"

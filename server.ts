@@ -27,20 +27,50 @@ const ai = new GoogleGenAI({
 // API endpoint: AI Analysis of speed run splits & technique
 app.post('/api/ai/analyze-run', async (req, res) => {
   try {
-    const { totalTime, split1, split2, split3, betaUsed, previousBest, gender } = req.body;
+    const { totalTime, split1, split2, split3, betaUsed, previousBest, gender, routeCategory } = req.body;
 
-    const wrTime = gender === 'women' ? 6.06 : 4.74;
-    const wrHolder = gender === 'women' ? 'Aleksandra Mirosław' : 'Sam Watson';
-    const wrSplits = gender === 'women' ? [1.95, 2.12, 1.99] : [1.46, 1.62, 1.66];
+    const isU15 = routeCategory === 'youth_u15';
+    const isU13 = routeCategory === 'youth_u13';
+    const isYouth = isU15 || isU13;
+
+    const wrTime = isU15
+      ? gender === 'women' ? 6.95 : 6.18
+      : isU13
+      ? gender === 'women' ? 7.90 : 7.45
+      : gender === 'women' ? 6.06 : 4.74;
+
+    const wrHolder = isU15
+      ? 'Youth U15 Record (10m)'
+      : isU13
+      ? 'Kids U13 Record (10m)'
+      : gender === 'women'
+      ? 'Aleksandra Mirosław'
+      : 'Sam Watson';
+
+    const wrSplits = isU15
+      ? gender === 'women' ? [2.20, 2.40, 2.35] : [1.98, 2.15, 2.05]
+      : isU13
+      ? gender === 'women' ? [2.50, 2.75, 2.65] : [2.35, 2.58, 2.52]
+      : gender === 'women' ? [1.95, 2.12, 1.99] : [1.46, 1.62, 1.66];
+
+    const wallDesc = isU15
+      ? '10m Youth U15 (TOPO U15) speed wall'
+      : isU13
+      ? '10m Kids U13 (TOPO U13) speed wall'
+      : '15m Olympic IFSC speed wall';
+
+    const s1Range = isYouth ? '0-3.3m' : '0-5m';
+    const s2Range = isYouth ? '3.3-6.6m' : '5-10m';
+    const s3Range = isYouth ? '6.6-10m' : '10-15m';
 
     if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY') {
       try {
-        const prompt = `You are an elite IFSC Olympic speed climbing head coach and biomechanics specialist.
-Analyze this speed climbing run on the standard 15m IFSC speed wall:
-- Total Time: ${totalTime}s (compared to World Record: ${wrTime}s by ${wrHolder})
-- Split 1 (Holds 1-7, Start & First Dyno Hop 0-5m): ${split1}s (WR benchmark: ~${wrSplits[0]}s)
-- Split 2 (Holds 8-14, Low Dyno to Mid-Wall 5-10m): ${split2}s (WR benchmark: ~${wrSplits[1]}s)
-- Split 3 (Holds 15-20, Upper Dyno & Finish Pad Slap 10-15m): ${split3}s (WR benchmark: ~${wrSplits[2]}s)
+        const prompt = `You are an elite IFSC speed climbing head coach and biomechanics specialist.
+Analyze this speed climbing run on the ${wallDesc} (respond in Czech):
+- Total Time: ${totalTime}s (compared to Division Record: ${wrTime}s by ${wrHolder})
+- Split 1 (Start & Opening Sequence ${s1Range}): ${split1}s (benchmark: ~${wrSplits[0]}s)
+- Split 2 (Mid-Wall Transition ${s2Range}): ${split2}s (benchmark: ~${wrSplits[1]}s)
+- Split 3 (Upper Sprint & Finish Pad Slap ${s3Range}): ${split3}s (benchmark: ~${wrSplits[2]}s)
 - Beta Style: ${betaUsed || 'Standard IFSC Beta'}
 - Climber's Previous Best: ${previousBest ? previousBest + 's' : 'N/A'}
 
@@ -50,16 +80,16 @@ Format:
   "summary": "1-2 sharp coaching sentences evaluating this run",
   "weakestSection": 1, 2, or 3,
   "weakestSectionTitle": "Name of section",
-  "timeLossDelta": "+X.XXs against optimal trajectory",
+  "timeLossDelta": "+X.XXs against benchmark pace",
   "biomechanicObservations": [
-    "Observation 1 (e.g. hip distance to wall, foot tension on hold 4)",
-    "Observation 2 (e.g. dyno commit angle, hand-eye slap precision on finish pad)"
+    "Observation 1 (e.g. hip distance to wall, foot tension on opening holds)",
+    "Observation 2 (e.g. transition rhythm, hand-eye slap precision on finish pad)"
   ],
   "tacticalCues": [
-    "Specific micro-cue 1 (e.g. 'Drive right toe deeper on hold 3 to prevent kick-out')",
+    "Specific micro-cue 1",
     "Specific micro-cue 2"
   ],
-  "recommendedDrill": "Name of key drill (e.g., Campus 1-4-7 power snatch or 5m start explosion reps)"
+  "recommendedDrill": "Name of key drill"
 }
 Return valid JSON only without markdown code blocks.`;
 
@@ -80,48 +110,47 @@ Return valid JSON only without markdown code blocks.`;
     }
 
     // High-accuracy heuristic speed climbing biomechanics fallback
-    const s1 = parseFloat(split1) || 2.2;
-    const s2 = parseFloat(split2) || 2.6;
-    const s3 = parseFloat(split3) || 2.5;
+    const s1 = parseFloat(split1) || wrSplits[0] * 1.25;
+    const s2 = parseFloat(split2) || wrSplits[1] * 1.25;
+    const s3 = parseFloat(split3) || wrSplits[2] * 1.25;
 
-    // Delta compared to WR proportions
     const diff1 = s1 - wrSplits[0];
     const diff2 = s2 - wrSplits[1];
     const diff3 = s3 - wrSplits[2];
 
     let weakest = 1;
-    let weakestTitle = 'Start & Launch (Holds 1-7, 0-5m)';
-    let timeLoss = `+${diff1.toFixed(2)}s behind WR pace`;
-    let drill = 'Start pad explosive reaction & Hold 3-4 heel whip reps';
+    let weakestTitle = `Start & náběh (${s1Range})`;
+    let timeLoss = `${diff1 >= 0 ? '+' : ''}${diff1.toFixed(2)}s vs rekord kategorie`;
+    let drill = 'Výbušný start ze země & rychlá práce nohou na prvních chytech';
 
     if (diff2 >= diff1 && diff2 >= diff3) {
       weakest = 2;
-      weakestTitle = 'Mid-Wall Dyno & Tomoa Skip (Holds 8-14, 5-10m)';
-      timeLoss = `+${diff2.toFixed(2)}s behind WR pace`;
-      drill = 'Continuous campus power pull-throughs & lateral hip drive';
+      weakestTitle = isYouth ? `Střed stěny & přechod (${s2Range})` : `Dyno & střed stěny (${s2Range})`;
+      timeLoss = `${diff2 >= 0 ? '+' : ''}${diff2.toFixed(2)}s vs rekord kategorie`;
+      drill = 'Plynulý přechod středem stěny & koordinace boků k těžišti';
     } else if (diff3 >= diff1 && diff3 >= diff2) {
       weakest = 3;
-      weakestTitle = 'Headwall & Finish Slap (Holds 15-20, 10-15m)';
-      timeLoss = `+${diff3.toFixed(2)}s behind WR pace`;
-      drill = 'Upper 5m speed repeats & high-velocity finish pad target slap';
+      weakestTitle = `Horní pasáž & dohmat (${s3Range})`;
+      timeLoss = `${diff3 >= 0 ? '+' : ''}${diff3.toFixed(2)}s vs rekord kategorie`;
+      drill = `Sprint horního úseku (${s3Range}) & přesný dohmat celou dlaní`;
     }
 
     const fallbackData = {
-      summary: `Solid run of ${totalTime}s. Greatest speed bleed was detected in ${weakestTitle}, where rhythm hesitated by ${timeLoss}.`,
+      summary: `Zaznamenán čas ${totalTime}s (${isU15 ? '10m U15' : isU13 ? '10m U13' : '15m Dospělí'}). Největší rezerva je v úseku ${weakestTitle} (${timeLoss}).`,
       weakestSection: weakest,
       weakestSectionTitle: weakestTitle,
       timeLossDelta: timeLoss,
       biomechanicObservations: [
         weakest === 1
-          ? 'Hips drifted 8cm too far off the 5° overhanging wall during the initial pull, increasing deadweight friction.'
+          ? 'Odraz ze startovní pozice měl mírné odklonění boků od 5° převislé stěny.'
           : weakest === 2
-          ? 'Slight hesitation at the foot transfer before the mid-wall dyno cost 180 milliseconds of vertical momentum.'
-          : 'Glance towards the finish sensor delayed the final 2-hand slap extension by two frames.',
-        'Foot tracking remained centered, maintaining clean vertical velocity along the route axis.',
+          ? 'Krátké zaváhání při přenesení nohou ve střední části zpomalilo vertikální akceleraci.'
+          : 'Předčasný pohled na cílový senzor zkrátil poslední záběr rukou před dohmatem.',
+        'Vertikální osa pohybu zůstala stabilní bez zbytečných stranových výkyvů.',
       ],
       tacticalCues: [
-        'Keep eye contact locked 2 holds ahead rather than tracking current hand placements.',
-        'Explode through the ball of the right foot to propel the pelvis into the wall.',
+        'Sledujte očima 2 chyty dopředu místo kontroly aktuální ruky.',
+        'Udržujte pánev těsně u stěny a tlačte dynamiku přímo z přední části chodidel.',
       ],
       recommendedDrill: drill,
     };

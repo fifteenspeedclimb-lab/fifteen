@@ -17,6 +17,9 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
   const profile = getUserProfile();
   const [loading, setLoading] = useState<boolean>(!run.aiAnalysis);
   const [analysis, setAnalysis] = useState<AIAnalysisResult | null>(run.aiAnalysis || null);
+  const isYouth = run.routeCategory === 'youth_u13' || run.routeCategory === 'youth_u15';
+  const categoryLabel =
+    run.routeCategory === 'youth_u15' ? '10m U15' : run.routeCategory === 'youth_u13' ? '10m U13' : '15m';
 
   useEffect(() => {
     if (!run.aiAnalysis) {
@@ -32,8 +35,9 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
               split2: run.splits.split2,
               split3: run.splits.split3,
               betaUsed: run.betaUsed,
-              previousBest: profile.personalBest,
+              previousBest: profile.personalBestByCategory?.[run.routeCategory] || profile.personalBest,
               gender: run.gender,
+              routeCategory: run.routeCategory,
             }),
           });
           const json = await res.json();
@@ -59,7 +63,7 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
           <div className="flex items-center gap-2">
             <Sparkles className="w-5 h-5 text-red-600" />
             <h2 className="font-display font-extrabold text-lg text-slate-950 dark:text-white">
-              AI Trenér Fifteen: Rozbor splitů (15m)
+              AI Trenér Fifteen: Rozbor splitů ({categoryLabel})
             </h2>
           </div>
           <button
@@ -74,16 +78,16 @@ export const AiAnalysisModal: React.FC<AiAnalysisModalProps> = ({
         <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-center justify-between">
           <div>
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-              Analyzovaný čas
+              Analyzovaný čas ({categoryLabel})
             </span>
             <div className="text-2xl font-black font-mono text-slate-950 dark:text-white mt-0.5">
               {run.totalTime.toFixed(3)}s
             </div>
           </div>
           <div className="text-right text-xs text-slate-500 font-mono">
-            <div>0–5m: {run.splits.split1.toFixed(2)}s</div>
-            <div>5–10m: {run.splits.split2.toFixed(2)}s</div>
-            <div>10–15m: {run.splits.split3.toFixed(2)}s</div>
+            <div>{isYouth ? '0–3.3m' : '0–5m'}: {run.splits.split1.toFixed(2)}s</div>
+            <div>{isYouth ? '3.3–6.6m' : '5–10m'}: {run.splits.split2.toFixed(2)}s</div>
+            <div>{isYouth ? '6.6–10m' : '10–15m'}: {run.splits.split3.toFixed(2)}s</div>
           </div>
         </div>
 

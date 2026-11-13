@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Download, Trash2, Trophy, Sparkles, Video, Play, X, AlertTriangle } from 'lucide-react';
-import { SpeedRun } from '../types/climbing';
+import { RouteCategory, SpeedRun } from '../types/climbing';
 import { deleteRun, removeRunVideo, clearAllRuns, clearDemoRuns } from '../utils/storage';
 import { Language, TRANSLATIONS } from '../utils/i18n';
 
@@ -10,7 +10,14 @@ interface LogbookModalProps {
   onSelectRunForAnalysis: (run: SpeedRun) => void;
   onRunsChanged: (runs: SpeedRun[]) => void;
   lang?: Language;
+  currentCategory?: RouteCategory;
 }
+
+const getCategoryShortLabel = (cat: RouteCategory): string => {
+  if (cat === 'youth_u15') return '10m U15';
+  if (cat === 'youth_u13') return '10m U13';
+  return '15m';
+};
 
 export const LogbookModal: React.FC<LogbookModalProps> = ({
   runs,
@@ -18,19 +25,26 @@ export const LogbookModal: React.FC<LogbookModalProps> = ({
   onSelectRunForAnalysis,
   onRunsChanged,
   lang = 'cs',
+  currentCategory = 'adults_15m',
 }) => {
   const t = TRANSLATIONS[lang];
+  const [categoryFilter, setCategoryFilter] = useState<'all' | RouteCategory>(currentCategory);
   const [filterBeta, setFilterBeta] = useState<string>('all');
   const [activeVideoRun, setActiveVideoRun] = useState<SpeedRun | null>(null);
   const [deletingRunId, setDeletingRunId] = useState<string | null>(null);
   const [confirmDeleteVideoId, setConfirmDeleteVideoId] = useState<string | null>(null);
   const [showConfirmClearAll, setShowConfirmClearAll] = useState<boolean>(false);
 
-  const filteredRuns = runs.filter((r) =>
+  const categoryFilteredRuns = runs.filter((r) =>
+    categoryFilter === 'all' ? true : r.routeCategory === categoryFilter
+  );
+
+  const filteredRuns = categoryFilteredRuns.filter((r) =>
     filterBeta === 'all' ? true : r.betaUsed === filterBeta
   );
 
-  const bestTime = runs.length > 0 ? Math.min(...runs.map((r) => r.totalTime)) : 0;
+  const validCategoryRuns = categoryFilteredRuns.filter((r) => !r.isFalseStart && r.totalTime > 0);
+  const bestTime = validCategoryRuns.length > 0 ? Math.min(...validCategoryRuns.map((r) => r.totalTime)) : 0;
 
   const confirmDeleteRun = (id: string) => {
     const updated = deleteRun(id);
@@ -70,11 +84,11 @@ export const LogbookModal: React.FC<LogbookModalProps> = ({
   };
 
   const exportCSV = () => {
-    const headers = 'ID,Datum,CelkovyCas,Split1,Split2,Split3,Reakce,Beta,Stena,Poznamky\n';
-    const rows = runs
+    const headers = 'ID,Datum,Kategorie,CelkovyCas,Split1,Split2,Split3,Reakce,Beta,Stena,Poznamky\n';
+    const rows = categoryFilteredRuns
       .map(
         (r) =>
-          `"${r.id}","${r.date}",${r.totalTime},${r.splits.split1},${r.splits.split2},${r.splits.split3},${r.reactionTime},"${r.betaUsed}","${r.gym}","${(r.notes || '').replace(/"/g, '""')}"`
+          `"${r.id}","${r.date}","${r.routeCategory}",${r.totalTime},${r.splits.split1},${r.splits.split2},${r.splits.split3},${r.reactionTime},"${r.betaUsed}","${r.gym}","${(r.notes || '').replace(/"/g, '""')}"`
       )
       .join('\n');
     const dataStr = 'data:text/csv;charset=utf-8,' + encodeURIComponent(headers + rows);
@@ -84,11 +98,20 @@ export const LogbookModal: React.FC<LogbookModalProps> = ({
     dlAnchor.click();
   };
 
-  const sortedByDate = [...runs].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  const sortedByDate = [...validCategoryRuns].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   const chartPoints = sortedByDate.slice(-10);
   const minTime = chartPoints.length > 0 ? Math.min(...chartPoints.map((p) => p.totalTime)) : 5.0;
   const maxTime = chartPoints.length > 0 ? Math.max(...chartPoints.map((p) => p.totalTime)) : 7.0;
   const timeSpan = Math.max(0.5, maxTime - minTime);
+
+  const categoryTitleLabel =
+    categoryFilter === 'all'
+      ? 'Všechny kategorie'
+      : categoryFilter === 'adults_15m'
+      ? '15m Dospělí'
+      : categoryFilter === 'youth_u15'
+      ? '10m U15'
+      : '10m U13';
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
@@ -97,10 +120,10 @@ export const LogbookModal: React.FC<LogbookModalProps> = ({
           <div>
             <h2 className="font-display font-black text-xl text-slate-950 dark:text-white flex items-center gap-2">
               <Trophy className="w-5 h-5 text-amber-500" />
-              <span>Deník časů Fifteen (15m)</span>
+              <span>Deník časů Fifteen ({categoryTitleLabel})</span>
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              {runs.length} zaznamenaných výlezů · Osobák: {bestTime > 0 ? `${bestTime.toFixed(3)}s` : '—'}
+              {categoryFilteredRuns.length} zaznamenaných výlezů · Osobák: {bestTime > 0 ? `${bestTime.toFixed(3)}s` : '—'}
             </p>
           </div>
 
@@ -126,11 +149,38 @@ export const LogbookModal: React.FC<LogbookModalProps> = ({
           </div>
         </div>
 
+        {/* Category Filter Tabs */}
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+          {([
+            { id: 'adults_15m', label: '15m Dospělí' },
+            { id: 'youth_u15', label: '10m U15' },
+            { id: 'youth_u13', label: '10m U13' },
+            { id: 'all', label: 'Všechny' },
+          ] as const).map((cat) => {
+            const count = cat.id === 'all' ? runs.length : runs.filter((r) => r.routeCategory === cat.id).length;
+            return (
+              <button
+                key={cat.id}
+                type="button"
+                onClick={() => setCategoryFilter(cat.id)}
+                className={`min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-bold transition-colors shrink-0 border flex items-center gap-1.5 ${
+                  categoryFilter === cat.id
+                    ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-950 border-slate-900 dark:border-white'
+                    : 'bg-slate-50 dark:bg-slate-950 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800 hover:border-slate-400'
+                }`}
+              >
+                <span>{cat.label}</span>
+                <span className="font-mono text-[10px] opacity-75">({count})</span>
+              </button>
+            );
+          })}
+        </div>
+
         {/* Action Toolbar for Bulk Deletion and Data Management */}
         {runs.length > 0 && (
           <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs">
             <span className="text-slate-500 font-medium">
-              Celkem zaznamenáno {runs.length} {runs.length === 1 ? 'výlez' : runs.length < 5 ? 'výlezy' : 'výlezů'}
+              Zobrazeno {categoryFilteredRuns.length} z {runs.length} výlezů
             </span>
 
             <div>
@@ -173,7 +223,9 @@ export const LogbookModal: React.FC<LogbookModalProps> = ({
         {chartPoints.length >= 2 && (
           <div className="p-4 bg-slate-50 dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-2">
             <div className="flex items-center justify-between text-xs font-bold">
-              <span>Vývoj rychlosti na 15 m</span>
+              <span>
+                Vývoj rychlosti ({categoryFilter === 'adults_15m' ? '15 m' : categoryFilter === 'all' ? 'všechny tratě' : '10 m'})
+              </span>
               <span className="text-emerald-600 dark:text-emerald-400 font-mono">
                 Rekord: {minTime.toFixed(3)}s
               </span>
@@ -258,10 +310,12 @@ export const LogbookModal: React.FC<LogbookModalProps> = ({
                     )}
                   </div>
                   <div className="text-[11px] text-slate-500 mt-0.5">
-                    {new Date(run.date).toLocaleDateString()} · {run.climberName || 'Lezec'} · {run.gym}
+                    {new Date(run.date).toLocaleDateString()} · {getCategoryShortLabel(run.routeCategory)} · {run.climberName || 'Lezec'} · {run.gym}
                   </div>
                   <div className="font-mono text-[10px] text-slate-400 mt-1">
-                    S1: {run.splits.split1.toFixed(2)}s · S2: {run.splits.split2.toFixed(2)}s · S3: {run.splits.split3.toFixed(2)}s
+                    {run.routeCategory === 'adults_15m'
+                      ? `0–5m: ${run.splits.split1.toFixed(2)}s · 5–10m: ${run.splits.split2.toFixed(2)}s · 10–15m: ${run.splits.split3.toFixed(2)}s`
+                      : `0–3.3m: ${run.splits.split1.toFixed(2)}s · 3.3–6.6m: ${run.splits.split2.toFixed(2)}s · 6.6–10m: ${run.splits.split3.toFixed(2)}s`}
                   </div>
                 </div>
 

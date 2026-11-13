@@ -176,6 +176,43 @@ export function playFalseStartAlarm() {
   }, 100);
 }
 
+let cachedVoices: Record<string, SpeechSynthesisVoice> = {};
+
+function getUnifiedVoice(langCode: 'cs' | 'de' | 'en'): SpeechSynthesisVoice | null {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return null;
+  const voices = window.speechSynthesis.getVoices();
+  if (!voices || voices.length === 0) return cachedVoices[langCode] || null;
+
+  const existing = cachedVoices[langCode];
+  if (existing && voices.some((v) => v.voiceURI === existing.voiceURI)) {
+    return existing;
+  }
+
+  const langPrefix = langCode === 'cs' ? 'cs' : langCode === 'de' ? 'de' : 'en';
+  const candidates = voices.filter((v) => v.lang.toLowerCase().startsWith(langPrefix));
+  if (candidates.length === 0) return null;
+
+  // Pick a single deterministic voice per language so "At your marks", "Ready", and cues sound consistent
+  const preferred =
+    candidates.find((v) => v.localService && (v.name.includes('Natural') || v.name.includes('Google') || v.default)) ||
+    candidates.find((v) => v.default) ||
+    candidates.find((v) => v.localService) ||
+    candidates[0];
+
+  if (preferred) {
+    cachedVoices[langCode] = preferred;
+  }
+  return preferred || null;
+}
+
+if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+  window.speechSynthesis.onvoiceschanged = () => {
+    cachedVoices = {};
+    getUnifiedVoice('en');
+    getUnifiedVoice('cs');
+  };
+}
+
 /**
  * Speech synthesis audio coach for Ghost Mode into earphones
  */
@@ -187,16 +224,14 @@ export function speakCoachCue(text: string, langCode: 'cs' | 'de' | 'en' = 'cs')
   try {
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1.25;
-    utterance.pitch = 1.05;
-    utterance.volume = Math.min(1.0, settings.volume * 1.1);
+    utterance.rate = 1.05;
+    utterance.pitch = 1.0;
+    utterance.volume = Math.min(1.0, settings.volume);
     utterance.lang = langCode === 'cs' ? 'cs-CZ' : langCode === 'de' ? 'de-DE' : 'en-US';
 
-    const voices = window.speechSynthesis.getVoices();
-    const langPrefix = langCode === 'cs' ? 'cs' : langCode === 'de' ? 'de' : 'en';
-    const preferredVoice = voices.find((v) => v.lang.toLowerCase().startsWith(langPrefix));
-    if (preferredVoice) {
-      utterance.voice = preferredVoice;
+    const unifiedVoice = getUnifiedVoice(langCode);
+    if (unifiedVoice) {
+      utterance.voice = unifiedVoice;
     }
 
     window.speechSynthesis.speak(utterance);
@@ -207,41 +242,26 @@ export function speakCoachCue(text: string, langCode: 'cs' | 'de' | 'en' = 'cs')
 
 /**
  * Official IFSC Starter Voice Commands: "At your marks" and "Ready"
+ * Uses a single unified voice, pitch (1.0), and rate (1.0) across all starter commands.
  */
 export function speakIFSCCommand(command: 'marks' | 'ready') {
   const settings = getStoredAudioSettings();
-  const text = command === 'marks' ? 'At your marks' : 'Ready';
-
-  // Subtle acoustic cue ensuring prompt is always heard even if TTS is muted/pending
-  try {
-    const ctx = getAudioContext();
-    if (command === 'marks') {
-      playTone(520, 0.15, 'sine', settings.volume * 0.4);
-    } else {
-      playTone(660, 0.12, 'sine', settings.volume * 0.45);
-    }
-  } catch {
-    // ignore
-  }
-
-  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
   if (!settings.voiceEnabled) return;
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+
+  const text = command === 'marks' ? 'At your marks' : 'Ready';
 
   try {
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = 'en-US';
-    utterance.volume = Math.min(1.0, settings.volume * 1.2);
-    utterance.pitch = command === 'marks' ? 0.95 : 1.05;
-    utterance.rate = command === 'marks' ? 0.95 : 1.1;
+    utterance.volume = Math.min(1.0, settings.volume);
+    utterance.pitch = 1.0;
+    utterance.rate = 1.0;
 
-    const voices = window.speechSynthesis.getVoices();
-    const englishVoice = voices.find(
-      (v) => v.lang.toLowerCase().startsWith('en') && (v.name.includes('Male') || v.name.includes('David') || v.name.includes('Natural'))
-    ) || voices.find((v) => v.lang.toLowerCase().startsWith('en'));
-
-    if (englishVoice) {
-      utterance.voice = englishVoice;
+    const unifiedVoice = getUnifiedVoice('en');
+    if (unifiedVoice) {
+      utterance.voice = unifiedVoice;
     }
 
     window.speechSynthesis.speak(utterance);
