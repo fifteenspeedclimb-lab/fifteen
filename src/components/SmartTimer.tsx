@@ -1520,10 +1520,16 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         {/* Start Mode Icons Grid */}
         <div className="grid grid-cols-4 gap-1 p-1 bg-slate-200/80 dark:bg-slate-900 rounded-2xl text-xs font-bold">
           {[
-            { id: 'ifsc_countdown' as StartMode, label: 'Pípnutí' },
-            { id: 'camera_motion' as StartMode, label: 'AI Kamera' },
-            { id: 'sound_trigger' as StartMode, label: 'AI Zvuk' },
-            { id: 'manual' as StartMode, label: 'Ruční' },
+            {
+              id: 'ifsc_countdown' as StartMode,
+              label: lang === 'cs' ? 'Pípnutí' : lang === 'de' ? 'Piepton' : 'Beeps',
+            },
+            { id: 'camera_motion' as StartMode, label: t.startCamera },
+            { id: 'sound_trigger' as StartMode, label: t.startSound },
+            {
+              id: 'manual' as StartMode,
+              label: lang === 'cs' ? 'Ruční' : lang === 'de' ? 'Manuell' : 'Manual',
+            },
           ].map((m) => (
             <button
               key={m.id}
