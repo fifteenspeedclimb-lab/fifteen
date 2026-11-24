@@ -24,7 +24,7 @@ import {
   deleteProfile,
   clearAllRuns
 } from '../utils/storage';
-import { SpeedRun } from '../types/climbing';
+import { RouteCategory, SpeedRun } from '../types/climbing';
 import { Language } from '../utils/i18n';
 import { FifteenAppIcon } from './FifteenLogo';
 
@@ -66,6 +66,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [homeGymInput, setHomeGymInput] = useState<string>(activeProfile.homeGym || '');
   const [nationalityCode, setNationalityCode] = useState<string>(activeProfile.nationalityCode || 'CZE');
   const [genderInput, setGenderInput] = useState<'men' | 'women'>(activeProfile.gender || 'men');
+  const [defaultCategoryInput, setDefaultCategoryInput] = useState<RouteCategory>(
+    activeProfile.defaultCategory || 'adults_15m'
+  );
   const [personalBestInput, setPersonalBestInput] = useState<string>(
     activeProfile.personalBest && activeProfile.personalBest > 0 ? activeProfile.personalBest.toFixed(3) : ''
   );
@@ -96,6 +99,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setHomeGymInput(prof.homeGym || '');
     setNationalityCode(prof.nationalityCode || 'CZE');
     setGenderInput(prof.gender || 'men');
+    setDefaultCategoryInput(prof.defaultCategory || 'adults_15m');
     setPersonalBestInput(prof.personalBest > 0 ? prof.personalBest.toFixed(3) : '');
     setTargetGoalInput(prof.targetGoal > 0 ? prof.targetGoal.toFixed(3) : '5.500');
     setFavoriteBeta(prof.favoriteBeta || 'standard');
@@ -132,6 +136,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       nationalityCode: country.code,
       flagEmoji: country.flag,
       gender: genderInput,
+      defaultCategory: defaultCategoryInput,
       personalBest: !isNaN(pbNum) && pbNum > 0 ? pbNum : 0,
       targetGoal: !isNaN(goalNum) && goalNum > 0 ? goalNum : 5.500,
       favoriteBeta,
@@ -163,6 +168,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       nationalityCode: country.code,
       flagEmoji: country.flag,
       gender: genderInput,
+      defaultCategory: defaultCategoryInput,
       personalBest: !isNaN(pbNum) && pbNum > 0 ? pbNum : 0,
       targetGoal: !isNaN(goalNum) && goalNum > 0 ? goalNum : 5.500,
       favoriteBeta,
@@ -184,6 +190,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setHomeGymInput('');
     setNationalityCode('CZE');
     setGenderInput('men');
+    setDefaultCategoryInput('adults_15m');
     setPersonalBestInput('');
     setTargetGoalInput('5.500');
     setFavoriteBeta('standard');
@@ -332,10 +339,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                             </span>
                           )}
                         </div>
-                        <div className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-2 truncate mt-0.5">
-                          <span>{prof.homeGym || 'Stěna nevyplněna'}</span>
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1.5 truncate mt-0.5">
+                          <span className="font-bold text-red-600 dark:text-red-400 shrink-0">
+                            {prof.defaultCategory === 'youth_u15'
+                              ? '10m U15'
+                              : prof.defaultCategory === 'youth_u13'
+                              ? '10m U13'
+                              : '15m Dospělí'}
+                          </span>
                           <span>•</span>
-                          <span className="font-mono font-bold text-slate-700 dark:text-slate-300">
+                          <span className="truncate">{prof.homeGym || 'Stěna nevyplněna'}</span>
+                          <span>•</span>
+                          <span className="font-mono font-bold text-slate-700 dark:text-slate-300 shrink-0">
                             PB: {prof.personalBest > 0 ? `${prof.personalBest.toFixed(2)}s` : '—'}
                           </span>
                         </div>
@@ -491,6 +506,33 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     }`}
                   >
                     {avatarColor === col && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Route Category Picker (15m Dospělí / 10m U15 / 10m U13) */}
+            <div>
+              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                Kategorie lezce (délka tratě)
+              </label>
+              <div className="grid grid-cols-3 gap-1 p-1 bg-slate-100 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 text-xs font-bold">
+                {[
+                  { id: 'adults_15m' as RouteCategory, label: '15m Dospělí' },
+                  { id: 'youth_u15' as RouteCategory, label: '10m U15' },
+                  { id: 'youth_u13' as RouteCategory, label: '10m U13' },
+                ].map((cat) => (
+                  <button
+                    key={cat.id}
+                    type="button"
+                    onClick={() => setDefaultCategoryInput(cat.id)}
+                    className={`min-h-[38px] py-1.5 px-2 rounded-lg transition-all ${
+                      defaultCategoryInput === cat.id
+                        ? 'bg-red-600 text-white shadow-sm'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    {cat.label}
                   </button>
                 ))}
               </div>

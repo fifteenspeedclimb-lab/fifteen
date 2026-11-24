@@ -12,6 +12,7 @@ export interface UserProfile {
   avatarUrl?: string;
   avatarColor?: string; // hex or tailwind color
   gender: 'men' | 'women';
+  defaultCategory?: RouteCategory;
   homeGym: string;
   personalBest: number;
   personalBestByCategory?: Partial<Record<RouteCategory, number>>;
@@ -30,6 +31,7 @@ export const DEFAULT_PROFILE: UserProfile = {
   email: '',
   avatarColor: '#ef4444',
   gender: 'men',
+  defaultCategory: 'adults_15m',
   homeGym: '',
   personalBest: 0,
   personalBestByCategory: {},
@@ -277,6 +279,7 @@ export function createProfile(data: Partial<UserProfile>): UserProfile {
     nationalityCode: data.nationalityCode || 'CZE',
     flagEmoji: data.flagEmoji || '🇨🇿',
     gender: data.gender || 'men',
+    defaultCategory: data.defaultCategory || 'adults_15m',
     homeGym: data.homeGym || '',
     targetGoal: data.targetGoal || 5.5,
     personalBest: data.personalBest || 0,

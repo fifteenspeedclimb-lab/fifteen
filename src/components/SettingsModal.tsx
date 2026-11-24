@@ -11,7 +11,8 @@ import {
 } from '../utils/audio';
 import { FifteenAppIcon } from './FifteenLogo';
 
-import { UserProfile, getUserProfile } from '../utils/storage';
+import { RouteCategory } from '../types/climbing';
+import { UserProfile, getUserProfile, saveUserProfile } from '../utils/storage';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -22,6 +23,9 @@ interface SettingsModalProps {
   onOpenLegal: () => void;
   onOpenAuth: () => void;
   userProfile?: UserProfile;
+  currentCategory?: RouteCategory;
+  onSelectCategory?: (cat: RouteCategory) => void;
+  onProfileUpdated?: (profile: UserProfile) => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -33,10 +37,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onOpenLegal,
   onOpenAuth,
   userProfile,
+  currentCategory,
+  onSelectCategory,
+  onProfileUpdated,
 }) => {
-  const [profile] = useState<UserProfile>(userProfile || getUserProfile);
+  const [profile, setProfile] = useState<UserProfile>(userProfile || getUserProfile);
   const [audioSettings, setAudioSettings] = useState(getStoredAudioSettings());
   const [isPlayingTest, setIsPlayingTest] = useState(false);
+
+  const selectedClimberCategory: RouteCategory = profile.defaultCategory || currentCategory || 'adults_15m';
+
+  const handleClimberCategoryChange = (cat: RouteCategory) => {
+    const updated: UserProfile = { ...profile, defaultCategory: cat };
+    setProfile(updated);
+    saveUserProfile(updated);
+    onProfileUpdated?.(updated);
+    onSelectCategory?.(cat);
+  };
 
   const handleToneStyleChange = (style: ToneStyle) => {
     const updated = { ...audioSettings, toneStyle: style };
@@ -106,44 +123,79 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </button>
         </div>
 
-        {/* 0. Athlete Profile & Nationality Card */}
-        <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <div className="w-10 h-10 rounded-xl bg-red-600/10 text-red-600 dark:text-red-400 flex items-center justify-center font-bold text-lg border border-red-500/20">
-              {profile.flagEmoji || '🇨🇿'}
-            </div>
-            <div>
-              <div className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
-                <span>{profile.name || (lang === 'cs' ? 'Nenastavený profil lezce' : 'Profile not set')}</span>
-                <span className="text-[10px] px-1.5 py-0.2 rounded font-mono font-bold bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
-                  {profile.nationalityCode || 'CZE'}
-                </span>
+        {/* 0. Athlete Profile, Category & Nationality Card */}
+        <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-10 h-10 rounded-xl bg-red-600/10 text-red-600 dark:text-red-400 flex items-center justify-center font-bold text-lg border border-red-500/20 shrink-0">
+                {profile.flagEmoji || '🇨🇿'}
               </div>
-              <div className="text-[11px] text-slate-500">
-                {profile.homeGym ? `${profile.homeGym} · ` : ''}{profile.nationality || 'Česká republika'}
+              <div className="min-w-0">
+                <div className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
+                  <span className="truncate">{profile.name || (lang === 'cs' ? 'Nenastavený profil lezce' : 'Profile not set')}</span>
+                  <span className="text-[10px] px-1.5 py-0.2 rounded font-mono font-bold bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 shrink-0">
+                    {profile.nationalityCode || 'CZE'}
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-500 truncate">
+                  {profile.homeGym ? `${profile.homeGym} · ` : ''}{profile.nationality || 'Česká republika'}
+                </div>
               </div>
             </div>
+
+            <button
+              onClick={() => {
+                onClose();
+                onOpenAuth();
+              }}
+              className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm shrink-0"
+            >
+              {profile.isAuthenticated
+                ? lang === 'cs'
+                  ? 'Upravit profil'
+                  : lang === 'de'
+                  ? 'Profil bearbeiten'
+                  : 'Edit profile'
+                : lang === 'cs'
+                ? 'Přihlásit se'
+                : lang === 'de'
+                ? 'Anmelden'
+                : 'Sign in'}
+            </button>
           </div>
 
-          <button
-            onClick={() => {
-              onClose();
-              onOpenAuth();
-            }}
-            className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm shrink-0"
-          >
-            {profile.isAuthenticated
-              ? lang === 'cs'
-                ? 'Upravit profil'
+          <div className="space-y-1">
+            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+              {lang === 'cs'
+                ? 'Kategorie lezce (délka tratě)'
                 : lang === 'de'
-                ? 'Profil bearbeiten'
-                : 'Edit profile'
-              : lang === 'cs'
-              ? 'Přihlásit se'
-              : lang === 'de'
-              ? 'Anmelden'
-              : 'Sign in'}
-          </button>
+                ? 'Kletterer-Kategorie (Strecke)'
+                : 'Climber Category (Route)'}
+            </span>
+            <div className="grid grid-cols-3 gap-1 p-1 bg-slate-200/70 dark:bg-slate-900 rounded-xl text-[11px] font-bold">
+              {[
+                {
+                  id: 'adults_15m' as RouteCategory,
+                  label: lang === 'cs' ? '15m Dospělí' : lang === 'de' ? '15m Erw.' : '15m Adults',
+                },
+                { id: 'youth_u15' as RouteCategory, label: '10m U15' },
+                { id: 'youth_u13' as RouteCategory, label: '10m U13' },
+              ].map((cat) => (
+                <button
+                  key={cat.id}
+                  type="button"
+                  onClick={() => handleClimberCategoryChange(cat.id)}
+                  className={`min-h-[36px] py-1 px-2 rounded-lg transition-all ${
+                    selectedClimberCategory === cat.id
+                      ? 'bg-red-600 text-white shadow-sm'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  {cat.label}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
 
         {/* 1. Language Picker */}

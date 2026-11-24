@@ -24,10 +24,12 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<string>('timer');
   const [isDark, setIsDark] = useState<boolean>(true);
   const [lang, setLang] = useState<Language>(getStoredLanguage());
-  const [currentCategory, setCurrentCategory] = useState<RouteCategory>('adults_15m');
+  const [profile, setProfile] = useState<UserProfile>(getUserProfile);
+  const [currentCategory, setCurrentCategory] = useState<RouteCategory>(
+    () => getUserProfile().defaultCategory || 'adults_15m'
+  );
   const [runs, setRuns] = useState<SpeedRun[]>([]);
   const [currentSelectedRun, setCurrentSelectedRun] = useState<SpeedRun | null>(null);
-  const [profile, setProfile] = useState<UserProfile>(getUserProfile());
 
   // Modals
   const [showSettings, setShowSettings] = useState<boolean>(false);
@@ -183,6 +185,9 @@ export default function App() {
           }}
           onProfileUpdated={(updatedProfile) => {
             setProfile(updatedProfile);
+            if (updatedProfile.defaultCategory) {
+              setCurrentCategory(updatedProfile.defaultCategory);
+            }
           }}
           onRunsChanged={handleRunsChanged}
           lang={lang}
@@ -211,6 +216,14 @@ export default function App() {
             setShowAuthModal(true);
           }}
           userProfile={profile}
+          currentCategory={currentCategory}
+          onSelectCategory={setCurrentCategory}
+          onProfileUpdated={(updatedProfile) => {
+            setProfile(updatedProfile);
+            if (updatedProfile.defaultCategory) {
+              setCurrentCategory(updatedProfile.defaultCategory);
+            }
+          }}
         />
       )}
     </div>
