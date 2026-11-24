@@ -190,6 +190,8 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [recordedVideoUrl, setRecordedVideoUrl] = useState<string | null>(null);
   const [videoPlaybackRate, setVideoPlaybackRate] = useState<number>(1.0);
+  const [playbackVideoSec, setPlaybackVideoSec] = useState<number>(0);
+  const [isPlaybackPlaying, setIsPlaybackPlaying] = useState<boolean>(false);
   const [showDeleteVideoConfirm, setShowDeleteVideoConfirm] = useState<boolean>(false);
   const [showDeleteRunConfirm, setShowDeleteRunConfirm] = useState<boolean>(false);
 
@@ -421,18 +423,49 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     handleScreenTapAction();
   };
 
-  // Burn climber's final result time permanently into the bottom-left corner of the saved video
+  // Format safe export filename: ClimberName_YYYY-MM-DD_HH-mm_6.482s.webm
+  const buildVideoFilename = (run: SpeedRun, ext: string): string => {
+    const rawName = (run.climberName || 'lezec').trim();
+    const safeName =
+      rawName
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-zA-Z0-9_-]+/g, '_')
+        .replace(/^_+|_+$/g, '') || 'lezec';
+
+    const d = run.date ? new Date(run.date) : new Date();
+    const validDate = Number.isNaN(d.getTime()) ? new Date() : d;
+    const yyyy = validDate.getFullYear();
+    const mm = String(validDate.getMonth() + 1).padStart(2, '0');
+    const dd = String(validDate.getDate()).padStart(2, '0');
+    const hh = String(validDate.getHours()).padStart(2, '0');
+    const min = String(validDate.getMinutes()).padStart(2, '0');
+
+    const datePart = `${yyyy}-${mm}-${dd}_${hh}-${min}`;
+    const timePart = `${run.totalTime.toFixed(3)}s`;
+    return `${safeName}_${datePart}_${timePart}.${ext}`;
+  };
+
+  // Burn live running timer (00.000s -> final result) permanently into the top-right corner of saved video
   const getAnnotatedVideoBlob = async (run: SpeedRun): Promise<{ blob: Blob; ext: string; mimeType: string } | null> => {
     if (!run.videoUrl) return null;
-    const cacheKey = `${run.id}_${run.totalTime.toFixed(3)}`;
+    const cacheKey = `${run.id}_top_right_running_${run.totalTime.toFixed(3)}`;
     if (exportedVideoCacheRef.current?.key === cacheKey) {
       return exportedVideoCacheRef.current.result;
     }
 
     const runRouteLabel =
       run.routeCategory === 'adults_15m' ? '15m' : run.routeCategory === 'youth_u15' ? '10m U15' : '10m U13';
-    const climberLabel = `${(run.climberName || 'LEZEC').toUpperCase()} · ${runRouteLabel}`;
-    const timeText = `${run.totalTime.toFixed(3)} s`;
+    const baseClimberLabel = `${(run.climberName || 'LEZEC').toUpperCase()} · ${runRouteLabel}`;
+
+    const formatVideoTime = (sec: number) => {
+      const clamped = Math.max(0, Math.min(run.totalTime, sec));
+      const whole = Math.floor(clamped);
+      const frac = Math.floor((clamped - whole) * 1000);
+      return `${whole.toString().padStart(2, '0')}.${frac.toString().padStart(3, '0')} s`;
+    };
+
+    const maxTimeReference = formatVideoTime(run.totalTime);
 
     const fallbackRawBlob = async () => {
       try {
@@ -498,33 +531,45 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         if (ev.data && ev.data.size > 0) chunks.push(ev.data);
       };
 
-      const drawWatermarkFrame = () => {
+      const drawWatermarkFrame = (forceFinal = false) => {
         ctx.drawImage(offscreenVideo, 0, 0, W, H);
 
-        // Bottom-left final time badge
+        let currentRunSec = offscreenVideo.currentTime || 0;
+        const vidDur = offscreenVideo.duration;
+        if (forceFinal) {
+          currentRunSec = run.totalTime;
+        } else if (Number.isFinite(vidDur) && vidDur > 0.25 && vidDur < run.totalTime) {
+          currentRunSec = (currentRunSec / vidDur) * run.totalTime;
+        }
+        const displaySec = Math.min(run.totalTime, Math.max(0, currentRunSec));
+        const isFinishedFrame = forceFinal || displaySec >= run.totalTime - 0.012;
+        const timeText = isFinishedFrame ? maxTimeReference : formatVideoTime(displaySec);
+        const topLabel = isFinishedFrame ? `${baseClimberLabel} · CÍL` : baseClimberLabel;
+
+        // Top-right live chrono badge
         const minDim = Math.min(W, H);
         const padX = Math.round(W * 0.03);
-        const padY = Math.round(H * 0.04);
+        const padY = Math.round(H * 0.035);
         const timeFontSize = Math.max(22, Math.round(minDim * 0.068));
-        const subFontSize = Math.max(11, Math.round(minDim * 0.025));
+        const subFontSize = Math.max(11, Math.round(minDim * 0.024));
 
         ctx.font = `900 ${timeFontSize}px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace`;
-        const timeMetrics = ctx.measureText(timeText);
+        const timeMetrics = ctx.measureText(maxTimeReference);
         ctx.font = `700 ${subFontSize}px system-ui, -apple-system, sans-serif`;
-        const subMetrics = ctx.measureText(climberLabel);
+        const subMetrics = ctx.measureText(`${baseClimberLabel} · CÍL`);
 
         const innerPadX = Math.round(minDim * 0.026);
         const innerPadY = Math.round(minDim * 0.018);
         const accentW = Math.max(4, Math.round(minDim * 0.009));
         const boxW = Math.max(timeMetrics.width, subMetrics.width) + innerPadX * 2 + accentW + 8;
         const boxH = subFontSize + timeFontSize + innerPadY * 2 + Math.round(minDim * 0.012);
-        const boxX = padX;
-        const boxY = H - padY - boxH;
+        const boxX = W - padX - boxW;
+        const boxY = padY;
         const radius = Math.max(8, Math.round(minDim * 0.022));
 
         ctx.save();
         ctx.fillStyle = 'rgba(9, 13, 24, 0.84)';
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
+        ctx.strokeStyle = isFinishedFrame ? 'rgba(16, 185, 129, 0.55)' : 'rgba(255, 255, 255, 0.22)';
         ctx.lineWidth = Math.max(1, Math.round(minDim * 0.0025));
         ctx.beginPath();
         if (typeof ctx.roundRect === 'function') {
@@ -535,16 +580,16 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         ctx.fill();
         ctx.stroke();
 
-        // Red speed climbing left accent strip
-        ctx.fillStyle = '#ef4444';
+        // Accent strip: Red while climbing, Emerald once finish time locked
+        ctx.fillStyle = isFinishedFrame ? '#10b981' : '#ef4444';
         ctx.fillRect(boxX + innerPadX * 0.5, boxY + innerPadY, accentW, boxH - innerPadY * 2);
 
         const textStartX = boxX + innerPadX * 0.5 + accentW + Math.round(innerPadX * 0.65);
 
-        ctx.fillStyle = 'rgba(203, 213, 225, 0.95)';
+        ctx.fillStyle = isFinishedFrame ? 'rgba(167, 243, 208, 0.98)' : 'rgba(203, 213, 225, 0.95)';
         ctx.font = `700 ${subFontSize}px system-ui, -apple-system, sans-serif`;
         ctx.textBaseline = 'top';
-        ctx.fillText(climberLabel, textStartX, boxY + innerPadY);
+        ctx.fillText(topLabel, textStartX, boxY + innerPadY);
 
         ctx.fillStyle = '#ffffff';
         ctx.font = `900 ${timeFontSize}px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace`;
@@ -590,19 +635,19 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
         const renderLoop = () => {
           if (stopped) return;
-          drawWatermarkFrame();
+          drawWatermarkFrame(false);
           if (!offscreenVideo.ended && !offscreenVideo.paused) {
             exportRafId = requestAnimationFrame(renderLoop);
           }
         };
 
         offscreenVideo.onended = () => {
-          drawWatermarkFrame();
-          setTimeout(finishExport, 120);
+          drawWatermarkFrame(true);
+          setTimeout(finishExport, 260);
         };
 
         offscreenVideo.currentTime = 0;
-        drawWatermarkFrame();
+        drawWatermarkFrame(false);
         recorder.start(100);
         offscreenVideo
           .play()
@@ -627,23 +672,23 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     }
   };
 
-  // Video saving handlers (Device download vs Cloud sharing) with burned-in bottom-left final time
+  // Video saving handlers (Device download vs Cloud sharing) with burned-in top-right running timer
   const handleDownloadVideoDirect = async () => {
     if (!finishedRun?.videoUrl || isExportingVideo) return;
     setIsExportingVideo(true);
-    setVideoShareFeedback('Vypisuji výsledný čas do levého dolního rohu videa...');
+    setVideoShareFeedback('Vypisuji běžící časomíru do pravého horního rohu videa...');
     try {
       const exported = await getAnnotatedVideoBlob(finishedRun);
       if (!exported) return;
       const downloadUrl = URL.createObjectURL(exported.blob);
       const link = document.createElement('a');
       link.href = downloadUrl;
-      link.download = `fifteen_run_${finishedRun.totalTime.toFixed(3)}s.${exported.ext}`;
+      link.download = buildVideoFilename(finishedRun, exported.ext);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       setTimeout(() => URL.revokeObjectURL(downloadUrl), 4000);
-      setVideoShareFeedback(`Video s časem ${finishedRun.totalTime.toFixed(3)}s bylo staženo!`);
+      setVideoShareFeedback(`Video ${buildVideoFilename(finishedRun, exported.ext)} bylo staženo!`);
       setTimeout(() => setVideoShareFeedback(null), 4000);
     } finally {
       setIsExportingVideo(false);
@@ -653,11 +698,11 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const handleShareVideoToCloud = async () => {
     if (!finishedRun?.videoUrl || isExportingVideo) return;
     setIsExportingVideo(true);
-    setVideoShareFeedback('Připravuji video s výsledným časem pro uložení...');
+    setVideoShareFeedback('Připravuji video s běžícím časem pro uložení...');
     try {
       const exported = await getAnnotatedVideoBlob(finishedRun);
       if (exported) {
-        const filename = `fifteen_speedrun_${finishedRun.totalTime.toFixed(3)}s.${exported.ext}`;
+        const filename = buildVideoFilename(finishedRun, exported.ext);
         const file = new File([exported.blob], filename, { type: exported.mimeType });
 
         if (typeof navigator !== 'undefined' && navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -837,6 +882,21 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     }
   }, []);
 
+  // Smooth 60fps time sync for in-app recorded video preview
+  useEffect(() => {
+    if (!isPlaybackPlaying) return;
+    let rafId = 0;
+    const tickPlayback = () => {
+      const vid = playbackVideoRef.current;
+      if (vid && !vid.paused && !vid.ended) {
+        setPlaybackVideoSec(vid.currentTime);
+        rafId = requestAnimationFrame(tickPlayback);
+      }
+    };
+    rafId = requestAnimationFrame(tickPlayback);
+    return () => cancelAnimationFrame(rafId);
+  }, [isPlaybackPlaying]);
+
   // Stop Timer
   const stopTimer = useCallback(() => {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
@@ -942,6 +1002,8 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     midSplitTimeRef.current = null;
     midLineTriggeredRef.current = false;
     setRecordedVideoUrl(null);
+    setPlaybackVideoSec(0);
+    setIsPlaybackPlaying(false);
     setFinishedRun(null);
     setShowDeleteVideoConfirm(false);
     setIsRunning(true);
@@ -2535,23 +2597,9 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
             />
             <canvas ref={canvasRef} className="hidden" />
 
-            {/* Quick Tap Action Floating Badge at Top */}
-            <div className="absolute top-3 left-3 right-3 flex items-center justify-center pointer-events-none z-20">
-              {isAiCameraMode && isCalibrating ? (
-                <div className="px-3 py-1 rounded-full bg-slate-900/90 text-amber-300 text-[11px] font-bold border border-amber-500/50 shadow-md backdrop-blur-sm flex items-center gap-1.5">
-                  <Crosshair className="w-3.5 h-3.5 text-amber-400" />
-                  <span>
-                    Přetáhněte prstem linie na videu · aktivní:{' '}
-                    <strong className="text-white">
-                      {draggingLine === 'foot' || (!draggingLine && activeCalibrationTool === 'foot')
-                        ? '🟢 Start – Noha'
-                        : draggingLine === 'mid' || (!draggingLine && activeCalibrationTool === 'mid')
-                        ? '🔵 Střed – Mezičas'
-                        : '🔴 Cíl – Ruka'}
-                    </strong>
-                  </span>
-                </div>
-              ) : (
+            {/* Quick Tap Action Floating Badge at Top (hidden during calibration so top finish line is unobstructed) */}
+            {!(isAiCameraMode && isCalibrating) && (
+              <div className="absolute top-3 left-3 right-3 flex items-center justify-center pointer-events-none z-20">
                 <div className="px-3 py-1 rounded-full bg-slate-950/80 text-white/90 text-[11px] font-bold border border-white/20 shadow-md backdrop-blur-sm flex items-center gap-1.5">
                   <Play className="w-3 h-3 fill-current text-red-500" />
                   <span>
@@ -2565,8 +2613,8 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                     </strong>
                   </span>
                 </div>
-              )}
-            </div>
+              </div>
+            )}
 
             {/* AI Kamera Overlay ONLY: Aligned 1:1 with rendered video pixels */}
             {isAiCameraMode && showGuides && (
@@ -3132,7 +3180,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                       onClick={handleDownloadVideoDirect}
                       disabled={isExportingVideo}
                       className="px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:text-red-600 hover:bg-slate-200 transition-colors flex items-center gap-1 text-[11px] font-bold disabled:opacity-60"
-                      title="Uložit video s výsledným časem v levém dolním rohu do zařízení"
+                      title="Uložit video s běžícím časem v pravém horním rohu do zařízení"
                     >
                       <Download className="w-3.5 h-3.5" />
                       <span>{isExportingVideo ? 'Připravuji...' : '💾 Do zařízení'}</span>
@@ -3174,22 +3222,75 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                   src={finishedRun.videoUrl}
                   controls
                   playsInline
+                  onPlay={() => setIsPlaybackPlaying(true)}
+                  onPause={() => {
+                    setIsPlaybackPlaying(false);
+                    if (playbackVideoRef.current) {
+                      setPlaybackVideoSec(playbackVideoRef.current.currentTime);
+                    }
+                  }}
+                  onEnded={() => {
+                    setIsPlaybackPlaying(false);
+                    setPlaybackVideoSec(finishedRun.totalTime);
+                  }}
+                  onTimeUpdate={() => {
+                    if (playbackVideoRef.current) {
+                      setPlaybackVideoSec(playbackVideoRef.current.currentTime);
+                    }
+                  }}
+                  onSeeked={() => {
+                    if (playbackVideoRef.current) {
+                      setPlaybackVideoSec(playbackVideoRef.current.currentTime);
+                    }
+                  }}
                   className="w-full h-full object-contain"
                 />
-                {/* Bottom-left Final Result Overlay */}
-                <div className="pointer-events-none absolute bottom-12 left-3 px-2.5 py-1.5 rounded-xl bg-slate-950/85 border border-white/20 border-l-4 border-l-red-500 shadow-lg backdrop-blur-sm">
-                  <div className="text-[9px] font-bold uppercase tracking-wider text-slate-300 leading-tight">
-                    {(finishedRun.climberName || 'LEZEC').toUpperCase()} ·{' '}
-                    {finishedRun.routeCategory === 'adults_15m'
-                      ? '15m'
-                      : finishedRun.routeCategory === 'youth_u15'
-                      ? '10m U15'
-                      : '10m U13'}
-                  </div>
-                  <div className="text-lg sm:text-xl font-mono font-black text-white tabular-nums leading-tight">
-                    {finishedRun.totalTime.toFixed(3)} s
-                  </div>
-                </div>
+                {/* Top-left Live Running / Final Chrono Overlay */}
+                {(() => {
+                  const vid = playbackVideoRef.current;
+                  const vidDur = vid?.duration;
+                  let mappedSec = playbackVideoSec;
+                  if (vidDur && Number.isFinite(vidDur) && vidDur > 0.25 && vidDur < finishedRun.totalTime) {
+                    mappedSec = (playbackVideoSec / vidDur) * finishedRun.totalTime;
+                  }
+                  const showLiveRunning = isPlaybackPlaying || (playbackVideoSec > 0.01 && !vid?.ended);
+                  const displaySec = showLiveRunning
+                    ? Math.min(finishedRun.totalTime, Math.max(0, mappedSec))
+                    : finishedRun.totalTime;
+                  const isAtFinish = !showLiveRunning || displaySec >= finishedRun.totalTime - 0.012;
+                  const formatted = `${Math.floor(displaySec)
+                    .toString()
+                    .padStart(2, '0')}.${Math.floor((displaySec % 1) * 1000)
+                    .toString()
+                    .padStart(3, '0')} s`;
+
+                  return (
+                    <div
+                      className={`pointer-events-none absolute top-3 right-3 px-2.5 py-1.5 rounded-xl bg-slate-950/85 border border-l-4 shadow-lg backdrop-blur-sm ${
+                        isAtFinish
+                          ? 'border-emerald-400/50 border-l-emerald-500'
+                          : 'border-white/20 border-l-red-500'
+                      }`}
+                    >
+                      <div
+                        className={`text-[9px] font-bold uppercase tracking-wider leading-tight ${
+                          isAtFinish ? 'text-emerald-300' : 'text-slate-300'
+                        }`}
+                      >
+                        {(finishedRun.climberName || 'LEZEC').toUpperCase()} ·{' '}
+                        {finishedRun.routeCategory === 'adults_15m'
+                          ? '15m'
+                          : finishedRun.routeCategory === 'youth_u15'
+                          ? '10m U15'
+                          : '10m U13'}
+                        {isAtFinish ? ' · CÍL' : ''}
+                      </div>
+                      <div className="text-lg sm:text-xl font-mono font-black text-white tabular-nums leading-tight">
+                        {formatted}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Slow Motion Speed Controls */}
