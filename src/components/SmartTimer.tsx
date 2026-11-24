@@ -28,7 +28,12 @@ import {
   Share2,
   Cloud,
   ExternalLink,
-  Crosshair
+  Crosshair,
+  Expand,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
+  ArrowDown
 } from 'lucide-react';
 import {
   playIFSCPrepTone,
@@ -198,6 +203,11 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   // Viewfinder & Positioning Helpers (only active in AI Kamera mode)
   const [showGuides, setShowGuides] = useState<boolean>(true);
   const [cameraFit, setCameraFit] = useState<'contain' | 'cover'>('contain');
+  const [isCameraExpanded, setIsCameraExpanded] = useState<boolean>(false);
+  const [gestureToast, setGestureToast] = useState<string | null>(null);
+  const [swipePreview, setSwipePreview] = useState<
+    'save' | 'delete' | 'restart' | 'exit' | 'need_two_fingers' | null
+  >(null);
 
   // Per-category Horizontal Trigger Lines (Bottom Foot, Middle Hand Split, Top Finish Hand)
   const [calibrations, setCalibrations] = useState<Record<RouteCategory, CategoryCalibration>>(getStoredCalibrations);
@@ -387,7 +397,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
   // Viewfinder Click: in AI Kamera calibration mode, moves the selected horizontal line; otherwise starts/stops timer!
   const handleViewfinderClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (justDraggedRef.current || draggingLine) return;
+    if (justDraggedRef.current || draggingLine || justSwipedRef.current) return;
 
     if (isAiCameraMode && isCalibrating) {
       const boxRect = lineDragBoxRef.current?.getBoundingClientRect();
@@ -756,6 +766,31 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const lineDragBoxRef = useRef<HTMLDivElement | null>(null);
   const justDraggedRef = useRef<boolean>(false);
+  const justSwipedRef = useRef<boolean>(false);
+  const gestureToastTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const touchGestureRef = useRef<{
+    active: boolean;
+    maxTouches: number;
+    startX: number;
+    startY: number;
+    lastX: number;
+    lastY: number;
+    twoStartX: number;
+    twoStartY: number;
+    twoLastX: number;
+    twoLastY: number;
+  }>({
+    active: false,
+    maxTouches: 0,
+    startX: 0,
+    startY: 0,
+    lastX: 0,
+    lastY: 0,
+    twoStartX: 0,
+    twoStartY: 0,
+    twoLastX: 0,
+    twoLastY: 0,
+  });
   const exportedVideoCacheRef = useRef<{
     key: string;
     result: { blob: Blob; ext: string; mimeType: string };
@@ -795,7 +830,23 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     recomputeVideoBox();
     window.addEventListener('resize', recomputeVideoBox);
     return () => window.removeEventListener('resize', recomputeVideoBox);
-  }, [recomputeVideoBox, cameraActive]);
+  }, [recomputeVideoBox, cameraActive, isCameraExpanded]);
+
+  useEffect(() => {
+    if (cameraActive && isCameraExpanded) {
+      const prevOverflow = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      const t1 = setTimeout(recomputeVideoBox, 40);
+      const t2 = setTimeout(recomputeVideoBox, 260);
+      return () => {
+        document.body.style.overflow = prevOverflow;
+        clearTimeout(t1);
+        clearTimeout(t2);
+      };
+    }
+    const t1 = setTimeout(recomputeVideoBox, 40);
+    return () => clearTimeout(t1);
+  }, [cameraActive, isCameraExpanded, recomputeVideoBox]);
 
   const setVideoElement = useCallback((element: HTMLVideoElement | null) => {
     videoRef.current = element;
@@ -1241,6 +1292,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         mediaStreamRef.current = null;
       }
       resetTrackingBuffers();
+      setIsCameraExpanded(false);
       setCameraActive(false);
       return;
     }
@@ -1969,6 +2021,237 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     }
   };
 
+  const showGestureFeedback = (msg: string) => {
+    setGestureToast(msg);
+    if (gestureToastTimerRef.current) {
+      clearTimeout(gestureToastTimerRef.current);
+    }
+    gestureToastTimerRef.current = setTimeout(() => {
+      setGestureToast(null);
+    }, 2600);
+  };
+
+  // Gesture 1: Swipe Left (1 finger) -> Save Run / Video (or Calibration)
+  const handleGestureSave = async () => {
+    if (isRunning) {
+      showGestureFeedback('Nejprve dokončete výlez (stop), poté přejetím doleva uložíte.');
+      return;
+    }
+    if (finishedRun) {
+      saveRun(finishedRun);
+      if (finishedRun.videoUrl) {
+        showGestureFeedback('💾 Ukládám pokus i video...');
+        await handleDownloadVideoDirect();
+        showGestureFeedback(`✓ Pokus (${finishedRun.totalTime.toFixed(3)}s) i video uloženy!`);
+      } else {
+        showGestureFeedback(`✓ Pokus (${finishedRun.totalTime.toFixed(3)}s) uložen!`);
+      }
+      return;
+    }
+    if (isAiCameraMode && isCalibrating) {
+      saveCalibrationExplicit();
+      showGestureFeedback(`✓ Kalibrace linií uložena`);
+      return;
+    }
+    showGestureFeedback('Žádný dokončený pokus k uložení.');
+  };
+
+  // Gesture 2: Two-finger Swipe Right -> Delete Run & Video
+  const handleGestureDelete = () => {
+    if (isRunning) {
+      resetTimer();
+      recordedChunksRef.current = [];
+      setFinishedRun(null);
+      setRecordedVideoUrl(null);
+      showGestureFeedback('🗑️ Rozběhnutý pokus zrušen a smazán');
+      return;
+    }
+    if (finishedRun) {
+      handleDeleteRunAttempt();
+      setElapsedMs(0);
+      setRecordedVideoUrl(null);
+      recordedChunksRef.current = [];
+      showGestureFeedback('🗑️ Pokus i videozáznam smazány');
+      return;
+    }
+    showGestureFeedback('Žádný pokus ke smazání.');
+  };
+
+  // Gesture 3: Swipe Up (1 finger) -> Restart Timer
+  const handleGestureRestart = () => {
+    resetTimer();
+    setFinishedRun(null);
+    setRecordedVideoUrl(null);
+    setLastLineTrigger(null);
+    split1TimeRef.current = null;
+    split2TimeRef.current = null;
+    midSplitTimeRef.current = null;
+    prevFootYRef.current = null;
+    prevHandsYRef.current = null;
+    showGestureFeedback('🔄 Časomíra restartována (00.000s)');
+  };
+
+  // Gesture 4: Swipe Down (1 finger) -> Exit Fullscreen Camera / Exit Camera Mode
+  const handleGestureExitMode = () => {
+    if (isCameraExpanded) {
+      setIsCameraExpanded(false);
+      showGestureFeedback('↙️ Zmenšeno z celé obrazovky');
+      return;
+    }
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+    }
+    resetTrackingBuffers();
+    setCameraActive(false);
+    setIsCalibrating(false);
+    if (startMode === 'camera_motion') {
+      setStartMode('manual');
+    }
+    showGestureFeedback('📷 Režim kamery ukončen');
+  };
+
+  const handleViewportTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement | null;
+    if (
+      draggingLine ||
+      justDraggedRef.current ||
+      target?.closest('[data-calibration-line="true"]') ||
+      target?.closest('[data-no-gesture="true"]')
+    ) {
+      touchGestureRef.current.active = false;
+      return;
+    }
+
+    const touches = e.touches;
+    const state = touchGestureRef.current;
+
+    if (touches.length === 1) {
+      const t0 = touches[0];
+      state.active = true;
+      state.maxTouches = 1;
+      state.startX = t0.clientX;
+      state.startY = t0.clientY;
+      state.lastX = t0.clientX;
+      state.lastY = t0.clientY;
+      state.twoStartX = t0.clientX;
+      state.twoStartY = t0.clientY;
+      state.twoLastX = t0.clientX;
+      state.twoLastY = t0.clientY;
+    } else if (touches.length >= 2) {
+      const midX = (touches[0].clientX + touches[1].clientX) / 2;
+      const midY = (touches[0].clientY + touches[1].clientY) / 2;
+      state.active = true;
+      state.maxTouches = Math.max(state.maxTouches, touches.length);
+      state.twoStartX = midX;
+      state.twoStartY = midY;
+      state.twoLastX = midX;
+      state.twoLastY = midY;
+    }
+  };
+
+  const handleViewportTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+    const state = touchGestureRef.current;
+    if (!state.active || draggingLine) return;
+
+    const touches = e.touches;
+    state.maxTouches = Math.max(state.maxTouches, touches.length);
+
+    if (touches.length >= 2) {
+      const midX = (touches[0].clientX + touches[1].clientX) / 2;
+      const midY = (touches[0].clientY + touches[1].clientY) / 2;
+      state.twoLastX = midX;
+      state.twoLastY = midY;
+      const dx = midX - state.twoStartX;
+      const dy = midY - state.twoStartY;
+      if (dx > 36 && Math.abs(dx) > Math.abs(dy) * 1.15) {
+        setSwipePreview('delete');
+      } else {
+        setSwipePreview(null);
+      }
+      return;
+    }
+
+    if (touches.length === 1 && state.maxTouches === 1) {
+      const t0 = touches[0];
+      state.lastX = t0.clientX;
+      state.lastY = t0.clientY;
+      const dx = t0.clientX - state.startX;
+      const dy = t0.clientY - state.startY;
+      const absX = Math.abs(dx);
+      const absY = Math.abs(dy);
+
+      if (absX > 36 && absX > absY * 1.2) {
+        setSwipePreview(dx < 0 ? 'save' : 'need_two_fingers');
+      } else if (absY > 36 && absY > absX * 1.2) {
+        setSwipePreview(dy < 0 ? 'restart' : 'exit');
+      } else {
+        setSwipePreview(null);
+      }
+    }
+  };
+
+  const handleViewportTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+    const state = touchGestureRef.current;
+    if (!state.active) return;
+
+    // Wait until all fingers lift
+    if (e.touches.length > 0) return;
+
+    state.active = false;
+    setSwipePreview(null);
+
+    if (draggingLine || justDraggedRef.current) return;
+
+    if (state.maxTouches >= 2) {
+      const dx = state.twoLastX - state.twoStartX;
+      const dy = state.twoLastY - state.twoStartY;
+      if (Math.hypot(dx, dy) > 22) {
+        justSwipedRef.current = true;
+        setTimeout(() => {
+          justSwipedRef.current = false;
+        }, 260);
+      }
+      if (dx >= 60 && Math.abs(dx) > Math.abs(dy) * 1.15) {
+        handleGestureDelete();
+      }
+      return;
+    }
+
+    if (state.maxTouches === 1) {
+      const dx = state.lastX - state.startX;
+      const dy = state.lastY - state.startY;
+      const absX = Math.abs(dx);
+      const absY = Math.abs(dy);
+
+      if (Math.hypot(dx, dy) > 22) {
+        justSwipedRef.current = true;
+        setTimeout(() => {
+          justSwipedRef.current = false;
+        }, 260);
+      }
+
+      if (absX >= 65 && absX > absY * 1.25) {
+        if (dx < 0) {
+          void handleGestureSave();
+        } else {
+          showGestureFeedback('Pro smazání přejeďte DOPRAVA DVĚMA prsty 👉👉');
+        }
+      } else if (absY >= 65 && absY > absX * 1.25) {
+        if (dy < 0) {
+          handleGestureRestart();
+        } else {
+          handleGestureExitMode();
+        }
+      }
+    }
+  };
+
+  const handleViewportTouchCancel = () => {
+    touchGestureRef.current.active = false;
+    setSwipePreview(null);
+  };
+
   return (
     <div className="max-w-3xl mx-auto px-3 sm:px-6 py-3 sm:py-5 space-y-3 sm:space-y-4 w-full max-w-full overflow-x-hidden">
       {/* Category Picker and Mode Selector */}
@@ -2146,6 +2429,21 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
             >
               <Video className="w-3.5 h-3.5" />
               <span className="hidden xs:inline">{recordVideoOnRun ? 'Záznam: ZAP' : 'Záznam: VYP'}</span>
+            </button>
+
+            {/* Fullscreen Camera Expansion (fills screen between TopBar & BottomTabBar) */}
+            <button
+              type="button"
+              onClick={() => setIsCameraExpanded((prev) => !prev)}
+              className={`min-h-[38px] px-2.5 sm:px-3 py-1 rounded-xl font-bold transition-all flex items-center gap-1 border ${
+                isCameraExpanded
+                  ? 'bg-emerald-600 text-white border-emerald-500 shadow-sm'
+                  : 'bg-slate-900 dark:bg-slate-800 text-white border-slate-700 hover:bg-slate-800'
+              }`}
+              title="Roztáhnout kameru přes celý displej (kromě horní lišty a spodní navigace)"
+            >
+              {isCameraExpanded ? <Minimize2 className="w-3.5 h-3.5" /> : <Expand className="w-3.5 h-3.5" />}
+              <span>{isCameraExpanded ? 'Zmenšit' : 'Celý displej'}</span>
             </button>
 
             {/* Switch facing front/back */}
@@ -2499,9 +2797,20 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
       {/* Main Screen: Active Camera Viewport OR Clean Athletic Digital Card */}
       {cameraActive ? (
-        <div ref={cameraContainerRef} className="space-y-2">
+        <div
+          ref={cameraContainerRef}
+          className={
+            isCameraExpanded
+              ? 'fixed top-16 sm:top-20 bottom-[calc(4rem+env(safe-area-inset-bottom))] md:bottom-0 left-0 right-0 z-30 bg-black flex flex-col overflow-hidden'
+              : 'space-y-2'
+          }
+        >
           {/* Status Bar OUTSIDE the video frame so image is 100% unobstructed */}
-          <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-2xl bg-slate-900 border border-slate-800 text-xs">
+          <div
+            className={`flex flex-wrap items-center justify-between gap-2 bg-slate-900 border-slate-800 text-xs ${
+              isCameraExpanded ? 'px-3 py-1.5 border-b shrink-0' : 'p-2.5 rounded-2xl border'
+            }`}
+          >
             <div className="flex items-center gap-2">
               {isRecording ? (
                 <div className="px-2.5 py-1 rounded-full bg-red-600 text-white font-mono font-black text-xs uppercase flex items-center gap-1.5 shadow-sm animate-pulse">
@@ -2511,7 +2820,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
               ) : (
                 <div className="px-2.5 py-1 rounded-full bg-slate-800 text-emerald-400 font-mono text-[11px] font-bold border border-emerald-500/30 flex items-center gap-1.5">
                   <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                  <span>HLEDÁČEK ({facingMode === 'environment' ? 'Zadní kamera' : 'Přední'})</span>
+                  <span>HLEDÁČEK ({facingMode === 'environment' ? 'Zadní' : 'Přední'})</span>
                 </div>
               )}
 
@@ -2526,7 +2835,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
               </span>
             </div>
 
-            {/* Real-time AI Kamera Limb Coordinates (ONLY shown in AI Kamera mode) */}
+            {/* Real-time AI Kamera Limb Coordinates & Quick Expanded Actions */}
             <div className="flex items-center gap-1.5 text-[11px] font-mono">
               {isAiCameraMode && (
                 <>
@@ -2566,7 +2875,62 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                 </>
               )}
 
-              {!isRunning && elapsedMs === 0 && (
+              {isCameraExpanded && (
+                <div className="flex items-center gap-1 font-sans">
+                  {isAiCameraMode && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = !isCalibrating;
+                          setIsCalibrating(next);
+                          if (next) setShowGuides(true);
+                        }}
+                        className={`px-2 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1 border ${
+                          isCalibrating
+                            ? 'bg-red-600 text-white border-red-500'
+                            : 'bg-slate-800 text-slate-200 border-slate-700'
+                        }`}
+                        title="Kalibrace linií"
+                      >
+                        <Sliders className="w-3 h-3" />
+                        <span className="hidden xs:inline">Linie</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={captureWallBackground}
+                        className={`px-2 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1 border ${
+                          wallBgReady
+                            ? 'bg-blue-600/80 text-white border-blue-400'
+                            : 'bg-slate-800 text-slate-200 border-slate-700'
+                        }`}
+                        title="Naskenovat prázdnou stěnu"
+                      >
+                        <Crosshair className="w-3 h-3" />
+                      </button>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    onClick={switchCameraFacing}
+                    className="p-1.5 rounded-lg bg-slate-800 text-slate-200 border border-slate-700 hover:bg-slate-700"
+                    title="Otočit kameru"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsCameraExpanded(false)}
+                    className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 flex items-center gap-1 text-[11px] font-bold"
+                    title="Zmenšit kameru"
+                  >
+                    <Minimize2 className="w-3.5 h-3.5" />
+                    <span className="hidden xs:inline">Zmenšit</span>
+                  </button>
+                </div>
+              )}
+
+              {!isRunning && elapsedMs === 0 && !isCameraExpanded && (
                 <div className="px-2.5 py-0.5 rounded-lg bg-black text-white font-mono font-bold text-xs border border-white/20">
                   00.000s
                 </div>
@@ -2574,14 +2938,20 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
             </div>
           </div>
 
-          {/* ACTIVE CAMERA HUD VIEWPORT – Expands vertically for "Celý záběr" mode */}
+          {/* ACTIVE CAMERA HUD VIEWPORT – Supports Fullscreen between TopBar & BottomTabBar + Touch Gestures */}
           <div
             ref={viewportRef}
             onClick={handleViewfinderClick}
-            className={`relative rounded-3xl bg-black border-2 border-slate-800 shadow-2xl overflow-hidden flex items-center justify-center select-none transition-all duration-300 group cursor-pointer hover:ring-2 hover:ring-red-500/40 ${
-              cameraFit === 'contain'
-                ? 'w-full h-[68vh] min-h-[520px] max-h-[820px]'
-                : 'w-full aspect-[4/3] sm:aspect-video'
+            onTouchStart={handleViewportTouchStart}
+            onTouchMove={handleViewportTouchMove}
+            onTouchEnd={handleViewportTouchEnd}
+            onTouchCancel={handleViewportTouchCancel}
+            className={`relative bg-black overflow-hidden flex items-center justify-center select-none touch-none transition-all duration-300 group cursor-pointer ${
+              isCameraExpanded
+                ? 'flex-1 min-h-0 w-full rounded-none border-0'
+                : cameraFit === 'contain'
+                ? 'w-full h-[68vh] min-h-[520px] max-h-[820px] rounded-3xl border-2 border-slate-800 shadow-2xl hover:ring-2 hover:ring-red-500/40'
+                : 'w-full aspect-[4/3] sm:aspect-video rounded-3xl border-2 border-slate-800 shadow-2xl hover:ring-2 hover:ring-red-500/40'
             }`}
           >
             <video
@@ -2596,6 +2966,65 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
               }`}
             />
             <canvas ref={canvasRef} className="hidden" />
+
+            {/* Live Swipe Direction Preview Badge */}
+            {swipePreview && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-40">
+                <div
+                  className={`px-4 py-2.5 rounded-2xl text-sm font-black shadow-2xl border backdrop-blur-md flex items-center gap-2 ${
+                    swipePreview === 'save'
+                      ? 'bg-emerald-600/95 text-white border-emerald-300'
+                      : swipePreview === 'delete'
+                      ? 'bg-red-600/95 text-white border-red-300'
+                      : swipePreview === 'restart'
+                      ? 'bg-amber-500/95 text-slate-950 border-amber-200'
+                      : swipePreview === 'need_two_fingers'
+                      ? 'bg-slate-900/95 text-amber-300 border-amber-500/60'
+                      : 'bg-slate-900/95 text-white border-white/30'
+                  }`}
+                >
+                  {swipePreview === 'save' && (
+                    <>
+                      <ArrowLeft className="w-4 h-4" />
+                      <span>Uložit pokus</span>
+                    </>
+                  )}
+                  {swipePreview === 'delete' && (
+                    <>
+                      <ArrowRight className="w-4 h-4" />
+                      <span>Smazat pokus (2 prsty)</span>
+                    </>
+                  )}
+                  {swipePreview === 'need_two_fingers' && (
+                    <>
+                      <ArrowRight className="w-4 h-4" />
+                      <span>Pro smazání použijte 2 prsty!</span>
+                    </>
+                  )}
+                  {swipePreview === 'restart' && (
+                    <>
+                      <ArrowUp className="w-4 h-4" />
+                      <span>Restart časomíry</span>
+                    </>
+                  )}
+                  {swipePreview === 'exit' && (
+                    <>
+                      <ArrowDown className="w-4 h-4" />
+                      <span>{isCameraExpanded ? 'Zmenšit kameru' : 'Ukončit režim kamery'}</span>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Gesture Action Toast Feedback */}
+            {gestureToast && !swipePreview && (
+              <div className="absolute top-12 left-3 right-3 flex justify-center pointer-events-none z-40">
+                <div className="px-3.5 py-1.5 rounded-full bg-slate-950/90 text-white text-xs font-bold border border-white/25 shadow-xl backdrop-blur-md">
+                  {gestureToast}
+                </div>
+              </div>
+            )}
 
             {/* Quick Tap Action Floating Badge at Top (hidden during calibration so top finish line is unobstructed) */}
             {!(isAiCameraMode && isCalibrating) && (
@@ -2616,6 +3045,23 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
               </div>
             )}
 
+            {/* Floating Expand/Collapse Button right inside Viewfinder for easy 1-tap reach on phone */}
+            {!isCameraExpanded && (
+              <button
+                type="button"
+                data-no-gesture="true"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsCameraExpanded(true);
+                }}
+                className="absolute bottom-3 right-3 z-30 px-2.5 py-1.5 rounded-xl bg-slate-950/85 hover:bg-slate-900 text-white text-[11px] font-bold border border-white/20 shadow-lg backdrop-blur-sm flex items-center gap-1.5 transition-all active:scale-95"
+                title="Roztáhnout kameru přes celý displej"
+              >
+                <Expand className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Celý displej</span>
+              </button>
+            )}
+
             {/* AI Kamera Overlay ONLY: Aligned 1:1 with rendered video pixels */}
             {isAiCameraMode && showGuides && (
               <div
@@ -2633,6 +3079,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
                 {/* 🔴 TOP LINE: Finish (Red Hands Dot) - Draggable when calibrating */}
                 <div
+                  data-calibration-line="true"
                   style={{ top: `${finishZoneY}%` }}
                   onPointerDown={(e) => handleLinePointerDown('hand', e)}
                   onPointerMove={(e) => handleLinePointerMove('hand', e)}
@@ -2681,6 +3128,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
                 {/* 🔵 MIDDLE LINE: Split (Red Hands Dot) - Draggable when calibrating */}
                 <div
+                  data-calibration-line="true"
                   style={{ top: `${midZoneY}%` }}
                   onPointerDown={(e) => handleLinePointerDown('mid', e)}
                   onPointerMove={(e) => handleLinePointerMove('mid', e)}
@@ -2732,6 +3180,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
                 {/* 🟢 BOTTOM LINE: Start (Green Foot Dot) - Draggable when calibrating */}
                 <div
+                  data-calibration-line="true"
                   style={{ top: `${startZoneY}%` }}
                   onPointerDown={(e) => handleLinePointerDown('foot', e)}
                   onPointerMove={(e) => handleLinePointerMove('foot', e)}
@@ -2866,28 +3315,121 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                 </div>
               </div>
             )}
+
+            {/* Expanded Mode Overlay Controls: Finished Run Quick Card + Calibrate Pill */}
+            {isCameraExpanded && isAiCameraMode && isCalibrating && (
+              <div
+                data-no-gesture="true"
+                onClick={(e) => e.stopPropagation()}
+                className="absolute bottom-3 left-3 right-3 z-30 p-2 rounded-2xl bg-slate-950/90 border border-white/15 backdrop-blur-md flex flex-wrap items-center justify-between gap-2 text-[11px]"
+              >
+                <span className="text-slate-300 font-bold">
+                  Přetáhněte linie prstem ({finishZoneY}% / {midZoneY}% / {startZoneY}%)
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={saveCalibrationExplicit}
+                    className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white font-bold"
+                  >
+                    Uložit linie
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsCalibrating(false)}
+                    className="px-2 py-1 rounded-lg bg-slate-800 text-slate-200 font-bold"
+                  >
+                    Hotovo
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {isCameraExpanded && finishedRun && !isRunning && (
+              <div
+                data-no-gesture="true"
+                onClick={(e) => e.stopPropagation()}
+                className="absolute bottom-3 left-3 right-3 z-30 p-3 rounded-2xl bg-slate-950/90 border border-emerald-500/40 backdrop-blur-md flex flex-wrap items-center justify-between gap-2 shadow-2xl"
+              >
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+                  <div>
+                    <div className="text-lg font-mono font-black text-white leading-none">
+                      {finishedRun.totalTime.toFixed(3)}s
+                    </div>
+                    <div className="text-[10px] text-slate-300 font-mono mt-0.5">
+                      {finishedRun.splits.split1.toFixed(2)}s · {finishedRun.splits.split2.toFixed(2)}s ·{' '}
+                      {finishedRun.splits.split3.toFixed(2)}s
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 text-[11px] font-bold">
+                  <button
+                    type="button"
+                    onClick={() => void handleGestureSave()}
+                    className="px-2.5 py-1.5 rounded-xl bg-emerald-600 text-white flex items-center gap-1"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Uložit</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleGestureDelete}
+                    className="px-2.5 py-1.5 rounded-xl bg-red-600/80 text-white flex items-center gap-1"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Smazat</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleGestureRestart}
+                    className="px-2.5 py-1.5 rounded-xl bg-slate-800 text-white flex items-center gap-1"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
-          {/* Positioning Helper Instruction Banner OUTSIDE the video frame */}
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-2 p-3 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-300">
-            <div className="flex items-center gap-2">
-              <Target className="w-4 h-4 text-emerald-500 shrink-0" />
-              <span>
-                {isAiCameraMode
-                  ? `🟢 Noha překročí spodní linii (${startZoneY}%) → Start | 🔴 Ruka střed (${midZoneY}%) → Mezičas | 🔴 Ruka vrchol (${finishZoneY}%) → Stop.`
-                  : 'Kamera nahrává video výlezu. Klepnutím na displej spustíte nebo zastavíte časomíru.'}
-              </span>
+          {/* Touch Gesture Legend Strip (Inside Expanded Mode OR Helper Banner Outside) */}
+          {isCameraExpanded ? (
+            <div className="px-3 py-1.5 bg-slate-950 border-t border-slate-800 text-[10px] sm:text-[11px] text-slate-300 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 shrink-0 font-bold">
+              <span className="text-emerald-400">← Přejetím doleva: Uložit</span>
+              <span className="text-red-400">2× → Dvěma prsty doprava: Smazat</span>
+              <span className="text-amber-400">↑ Nahoru: Restart</span>
+              <span className="text-slate-300">↓ Dolů: Vyskočit z režimu</span>
             </div>
-            <div className="text-[11px] text-slate-500 dark:text-slate-400 shrink-0">
-              {isAiCameraMode ? (
-                <span className="text-emerald-600 dark:text-emerald-400 font-bold">
-                  ● AI sledování (Noha / Tělo / Ruce)
-                </span>
-              ) : (
-                <span>Pouze videozáznam bez AI detekce</span>
-              )}
+          ) : (
+            <div className="flex flex-col gap-1.5 p-3 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-300">
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Target className="w-4 h-4 text-emerald-500 shrink-0" />
+                  <span>
+                    {isAiCameraMode
+                      ? `🟢 Noha překročí spodní linii (${startZoneY}%) → Start | 🔴 Ruka střed (${midZoneY}%) → Mezičas | 🔴 Ruka vrchol (${finishZoneY}%) → Stop.`
+                      : 'Kamera nahrává video výlezu. Klepnutím na displej spustíte nebo zastavíte časomíru.'}
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400 shrink-0">
+                  {isAiCameraMode ? (
+                    <span className="text-emerald-600 dark:text-emerald-400 font-bold">
+                      ● AI sledování (Noha / Tělo / Ruce)
+                    </span>
+                  ) : (
+                    <span>Pouze videozáznam bez AI detekce</span>
+                  )}
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center justify-center sm:justify-start gap-x-3 gap-y-1 pt-1 border-t border-slate-100 dark:border-slate-800 text-[10px] text-slate-500 dark:text-slate-400 font-semibold">
+                <span>Gesta na kameře:</span>
+                <span>← Doleva: Uložit</span>
+                <span>2× → Dvěma prsty doprava: Smazat</span>
+                <span>↑ Nahoru: Restart</span>
+                <span>↓ Dolů: Vyskočit z režimu</span>
+              </div>
             </div>
-          </div>
+          )}
         </div>
       ) : (
         /* SLEEK DIGITAL CHRONO CARD WITH TAP-TO-START */
