@@ -36,7 +36,8 @@ import {
   ArrowUp,
   ArrowDown,
   Lock,
-  Unlock
+  Unlock,
+  Zap
 } from 'lucide-react';
 import {
   playIFSCPrepTone,
@@ -60,7 +61,8 @@ import { Language, TRANSLATIONS } from '../utils/i18n';
 
 export interface CategoryCalibration {
   finishY: number; // percentage from top (e.g. 6% for 15m, 38% for U15/U13)
-  midY: number;    // middle of the route (e.g. 44% for 15m, 60% for U15/U13)
+  split2Y: number; // 2nd split line: 10m (adults) or 6.6m (youth)
+  split1Y: number; // 1st split line: 5m (adults) or 3.3m (youth)
   startY: number;  // percentage from top (e.g. 82%)
   footPadX: number; // horizontal % for foot hold sensor (default 48%)
   handPadX: number; // horizontal % for top finish pad sensor (default 50%)
@@ -68,13 +70,25 @@ export interface CategoryCalibration {
 }
 
 export const DEFAULT_CATEGORY_CALIBRATIONS: Record<RouteCategory, CategoryCalibration> = {
-  adults_15m: { finishY: 6, midY: 44, startY: 82, footPadX: 48, handPadX: 50, padFocusMode: true },
-  youth_u15: { finishY: 38, midY: 60, startY: 82, footPadX: 48, handPadX: 50, padFocusMode: true },
-  youth_u13: { finishY: 38, midY: 60, startY: 82, footPadX: 48, handPadX: 50, padFocusMode: true },
+  adults_15m: { finishY: 6, split2Y: 32, split1Y: 58, startY: 82, footPadX: 48, handPadX: 50, padFocusMode: true },
+  youth_u15: { finishY: 38, split2Y: 53, split1Y: 68, startY: 82, footPadX: 48, handPadX: 50, padFocusMode: true },
+  youth_u13: { finishY: 38, split2Y: 53, split1Y: 68, startY: 82, footPadX: 48, handPadX: 50, padFocusMode: true },
 };
 
 const CALIBRATION_STORAGE_KEY = 'fifteen_zone_calibrations_v3';
 const SCANNED_SOUND_STORAGE_KEY = 'fifteen_scanned_sound_profile_v1';
+const AI_CAM_IFSC_STORAGE_KEY = 'fifteen_ai_cam_ifsc_v1';
+
+const getStoredAiCamIfscEnabled = (): boolean => {
+  try {
+    const raw = localStorage.getItem(AI_CAM_IFSC_STORAGE_KEY);
+    if (raw === '0' || raw === 'false') return false;
+    if (raw === '1' || raw === 'true') return true;
+  } catch {
+    // ignore
+  }
+  return true;
+};
 
 export interface ScannedSoundProfile {
   ambientRms: number;
@@ -105,7 +119,8 @@ const getStoredCalibrations = (): Record<RouteCategory, CategoryCalibration> => 
       return {
         adults_15m: {
           finishY: Number(parsed.adults_15m?.finishY ?? DEFAULT_CATEGORY_CALIBRATIONS.adults_15m.finishY),
-          midY: Number(parsed.adults_15m?.midY ?? DEFAULT_CATEGORY_CALIBRATIONS.adults_15m.midY),
+          split2Y: Number(parsed.adults_15m?.split2Y ?? DEFAULT_CATEGORY_CALIBRATIONS.adults_15m.split2Y),
+          split1Y: Number(parsed.adults_15m?.split1Y ?? DEFAULT_CATEGORY_CALIBRATIONS.adults_15m.split1Y),
           startY: Number(parsed.adults_15m?.startY ?? DEFAULT_CATEGORY_CALIBRATIONS.adults_15m.startY),
           footPadX: Number(parsed.adults_15m?.footPadX ?? DEFAULT_CATEGORY_CALIBRATIONS.adults_15m.footPadX),
           handPadX: Number(parsed.adults_15m?.handPadX ?? DEFAULT_CATEGORY_CALIBRATIONS.adults_15m.handPadX),
@@ -113,7 +128,8 @@ const getStoredCalibrations = (): Record<RouteCategory, CategoryCalibration> => 
         },
         youth_u15: {
           finishY: Number(parsed.youth_u15?.finishY ?? DEFAULT_CATEGORY_CALIBRATIONS.youth_u15.finishY),
-          midY: Number(parsed.youth_u15?.midY ?? DEFAULT_CATEGORY_CALIBRATIONS.youth_u15.midY),
+          split2Y: Number(parsed.youth_u15?.split2Y ?? DEFAULT_CATEGORY_CALIBRATIONS.youth_u15.split2Y),
+          split1Y: Number(parsed.youth_u15?.split1Y ?? DEFAULT_CATEGORY_CALIBRATIONS.youth_u15.split1Y),
           startY: Number(parsed.youth_u15?.startY ?? DEFAULT_CATEGORY_CALIBRATIONS.youth_u15.startY),
           footPadX: Number(parsed.youth_u15?.footPadX ?? DEFAULT_CATEGORY_CALIBRATIONS.youth_u15.footPadX),
           handPadX: Number(parsed.youth_u15?.handPadX ?? DEFAULT_CATEGORY_CALIBRATIONS.youth_u15.handPadX),
@@ -121,7 +137,8 @@ const getStoredCalibrations = (): Record<RouteCategory, CategoryCalibration> => 
         },
         youth_u13: {
           finishY: Number(parsed.youth_u13?.finishY ?? DEFAULT_CATEGORY_CALIBRATIONS.youth_u13.finishY),
-          midY: Number(parsed.youth_u13?.midY ?? DEFAULT_CATEGORY_CALIBRATIONS.youth_u13.midY),
+          split2Y: Number(parsed.youth_u13?.split2Y ?? DEFAULT_CATEGORY_CALIBRATIONS.youth_u13.split2Y),
+          split1Y: Number(parsed.youth_u13?.split1Y ?? DEFAULT_CATEGORY_CALIBRATIONS.youth_u13.split1Y),
           startY: Number(parsed.youth_u13?.startY ?? DEFAULT_CATEGORY_CALIBRATIONS.youth_u13.startY),
           footPadX: Number(parsed.youth_u13?.footPadX ?? DEFAULT_CATEGORY_CALIBRATIONS.youth_u13.footPadX),
           handPadX: Number(parsed.youth_u13?.handPadX ?? DEFAULT_CATEGORY_CALIBRATIONS.youth_u13.handPadX),
@@ -217,10 +234,11 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   // Splits & Reaction
   const [split1Time, setSplit1Time] = useState<number | null>(null);
   const [split2Time, setSplit2Time] = useState<number | null>(null);
-  const [midSplitTime, setMidSplitTime] = useState<number | null>(null);
   const [reactionTime, setReactionTime] = useState<number>(0.138);
   const [isFalseStart, setIsFalseStart] = useState<boolean>(false);
+  const [falseStartReason, setFalseStartReason] = useState<string | null>(null);
   const [finishedRun, setFinishedRun] = useState<SpeedRun | null>(null);
+  const [ifscStartWithCamera, setIfscStartWithCamera] = useState<boolean>(getStoredAiCamIfscEnabled);
 
   // Active Camera & Video Recording
   const [cameraActive, setCameraActive] = useState<boolean>(false);
@@ -244,7 +262,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     'save' | 'delete' | 'restart' | 'exit' | 'need_two_fingers' | null
   >(null);
 
-  // Per-category Horizontal Trigger Lines (Bottom Foot, Middle Hand Split, Top Finish Hand)
+  // Per-category Horizontal Trigger Lines (Bottom Foot, 5m/3.3m Split 1, 10m/6.6m Split 2, Top Finish Hand)
   const [calibrations, setCalibrations] = useState<Record<RouteCategory, CategoryCalibration>>(getStoredCalibrations);
   const [isCalibrating, setIsCalibrating] = useState<boolean>(false);
   const [calibrationSavedToast, setCalibrationSavedToast] = useState<string | null>(null);
@@ -252,12 +270,13 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   // Active line coordinates dynamically derived from active category
   const activeCalibration = calibrations[currentCategory] || DEFAULT_CATEGORY_CALIBRATIONS[currentCategory];
   const finishZoneY = activeCalibration.finishY;
-  const midZoneY = activeCalibration.midY ?? (currentCategory === 'adults_15m' ? 44 : 60);
+  const split2ZoneY = activeCalibration.split2Y ?? (currentCategory === 'adults_15m' ? 32 : 53);
+  const split1ZoneY = activeCalibration.split1Y ?? (currentCategory === 'adults_15m' ? 58 : 68);
   const startZoneY = activeCalibration.startY;
 
   // Active calibration line tool & live drag state
-  const [activeCalibrationTool, setActiveCalibrationTool] = useState<'foot' | 'mid' | 'hand'>('foot');
-  const [draggingLine, setDraggingLine] = useState<'foot' | 'mid' | 'hand' | null>(null);
+  const [activeCalibrationTool, setActiveCalibrationTool] = useState<'foot' | 'split1' | 'split2' | 'hand'>('foot');
+  const [draggingLine, setDraggingLine] = useState<'foot' | 'split1' | 'split2' | 'hand' | null>(null);
 
   // Video saving feedback & modal state
   const [videoShareFeedback, setVideoShareFeedback] = useState<string | null>(null);
@@ -282,7 +301,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const [isPickingClimber, setIsPickingClimber] = useState<boolean>(false);
   const [poseEngineState, setPoseEngineState] = useState<'idle' | 'loading' | 'mediapipe' | 'fallback'>('idle');
   const [wallBgReady, setWallBgReady] = useState<boolean>(false);
-  const [lastLineTrigger, setLastLineTrigger] = useState<'start' | 'mid' | 'finish' | null>(null);
+  const [lastLineTrigger, setLastLineTrigger] = useState<'start' | 'split1' | 'split2' | 'finish' | null>(null);
 
   // Sensitivity Presets: low = strict, medium = balanced, high = sensitive
   const [sensitivityPreset, setSensitivityPreset] = useState<'low' | 'medium' | 'high'>('medium');
@@ -291,6 +310,24 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const categoryName = lang === 'cs' ? routeDef.nameCs : lang === 'de' ? routeDef.nameDe : routeDef.nameEn;
   const isYouthCategory = currentCategory === 'youth_u15' || currentCategory === 'youth_u13';
   const isAiCameraMode = startMode === 'camera_motion';
+
+  const toggleIfscStartWithCamera = () => {
+    setIfscStartWithCamera((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(AI_CAM_IFSC_STORAGE_KEY, next ? '1' : '0');
+      } catch {
+        // ignore
+      }
+      setCalibrationSavedToast(
+        next
+          ? '⚡ IFSC odpočet + detekce reakce ZAPNUTA'
+          : 'Kamera poběží v okamžitém režimu (IFSC odpočet VYPNUT)'
+      );
+      setTimeout(() => setCalibrationSavedToast(null), 2200);
+      return next;
+    });
+  };
 
   // Calibration updater methods
   const updateCalibrationField = <K extends keyof CategoryCalibration>(field: K, val: CategoryCalibration[K]) => {
@@ -312,12 +349,33 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     });
   };
 
-  const updateCalibration = (field: 'finishY' | 'startY' | 'midY' | 'footPadX' | 'handPadX', delta: number) => {
+  const updateCalibration = (
+    field: 'finishY' | 'startY' | 'split1Y' | 'split2Y' | 'footPadX' | 'handPadX',
+    delta: number
+  ) => {
     setCalibrations((prev) => {
       const current = prev[currentCategory] || DEFAULT_CATEGORY_CALIBRATIONS[currentCategory];
-      const currentVal = Number(current[field] ?? (field === 'midY' ? 50 : 50));
-      const minVal = field === 'finishY' ? 2 : field === 'midY' ? 20 : field === 'startY' ? 55 : 10;
-      const maxVal = field === 'finishY' ? 65 : field === 'midY' ? 75 : field === 'startY' ? 95 : 90;
+      const currentVal = Number(current[field] ?? 50);
+      const minVal =
+        field === 'finishY'
+          ? 2
+          : field === 'split2Y'
+          ? 12
+          : field === 'split1Y'
+          ? 25
+          : field === 'startY'
+          ? 55
+          : 10;
+      const maxVal =
+        field === 'finishY'
+          ? 60
+          : field === 'split2Y'
+          ? 75
+          : field === 'split1Y'
+          ? 85
+          : field === 'startY'
+          ? 95
+          : 90;
       const newVal = Math.min(maxVal, Math.max(minVal, currentVal + delta));
       const updated = {
         ...prev,
@@ -368,7 +426,10 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       stopTimer();
       return;
     }
-    if (countdownState === 'armed') {
+    if (countdownState === 'armed' || countdownState === 'marks' || countdownState === 'ready' || countdownState === 'beeps') {
+      clearCountdownTimeouts();
+      ifscReactionPendingRef.current = false;
+      footArmedBelowLineRef.current = false;
       setCountdownState('idle');
       return;
     }
@@ -386,7 +447,10 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   };
 
   // Direct Touch/Pointer Dragging on AI Kamera Lines
-  const handleLinePointerDown = (line: 'foot' | 'mid' | 'hand', e: React.PointerEvent<HTMLDivElement>) => {
+  const handleLinePointerDown = (
+    line: 'foot' | 'split1' | 'split2' | 'hand',
+    e: React.PointerEvent<HTMLDivElement>
+  ) => {
     if (!isAiCameraMode || !isCalibrating) return;
     e.stopPropagation();
     e.preventDefault();
@@ -399,7 +463,10 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     setDraggingLine(line);
   };
 
-  const handleLinePointerMove = (line: 'foot' | 'mid' | 'hand', e: React.PointerEvent<HTMLDivElement>) => {
+  const handleLinePointerMove = (
+    line: 'foot' | 'split1' | 'split2' | 'hand',
+    e: React.PointerEvent<HTMLDivElement>
+  ) => {
     if (draggingLine !== line || !lineDragBoxRef.current) return;
     e.stopPropagation();
     const boxRect = lineDragBoxRef.current.getBoundingClientRect();
@@ -408,13 +475,18 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     if (line === 'foot') {
       updateCalibrationField('startY', Math.min(95, Math.max(55, rawPct)));
     } else if (line === 'hand') {
-      updateCalibrationField('finishY', Math.min(65, Math.max(2, rawPct)));
+      updateCalibrationField('finishY', Math.min(60, Math.max(2, rawPct)));
+    } else if (line === 'split1') {
+      updateCalibrationField('split1Y', Math.min(85, Math.max(25, rawPct)));
     } else {
-      updateCalibrationField('midY', Math.min(80, Math.max(18, rawPct)));
+      updateCalibrationField('split2Y', Math.min(75, Math.max(12, rawPct)));
     }
   };
 
-  const handleLinePointerUp = (line: 'foot' | 'mid' | 'hand', e: React.PointerEvent<HTMLDivElement>) => {
+  const handleLinePointerUp = (
+    line: 'foot' | 'split1' | 'split2' | 'hand',
+    e: React.PointerEvent<HTMLDivElement>
+  ) => {
     if (draggingLine !== line) return;
     e.stopPropagation();
     try {
@@ -428,13 +500,22 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     }, 90);
     setDraggingLine(null);
 
-    const val = line === 'foot' ? startZoneY : line === 'hand' ? finishZoneY : midZoneY;
+    const val =
+      line === 'foot'
+        ? startZoneY
+        : line === 'hand'
+        ? finishZoneY
+        : line === 'split1'
+        ? split1ZoneY
+        : split2ZoneY;
     const label =
       line === 'foot'
-        ? `🟢 Spodní linie (Start – Noha) nastavena na ${val}%`
+        ? `🟢 Start – Noha nastaven na ${val}%`
         : line === 'hand'
-        ? `🔴 Vrcholová linie (Cíl – Ruka) nastavena na ${val}%`
-        : `🔵 Středová linie (Mezičas – Ruka) nastavena na ${val}%`;
+        ? `🔴 Cíl – Ruka nastaven na ${val}%`
+        : line === 'split1'
+        ? `🔵 Mezičas 1 (${isYouthCategory ? '3.3m' : '5m'}) nastaven na ${val}%`
+        : `🟣 Mezičas 2 (${isYouthCategory ? '6.6m' : '10m'}) nastaven na ${val}%`;
     setCalibrationSavedToast(label);
     setTimeout(() => setCalibrationSavedToast(null), 2000);
   };
@@ -507,17 +588,22 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       if (activeCalibrationTool === 'foot') {
         const clamped = Math.min(95, Math.max(55, clickY));
         updateCalibrationField('startY', clamped);
-        setCalibrationSavedToast(`🟢 Spodní linie (Noha) nastavena na ${clamped}%`);
+        setCalibrationSavedToast(`🟢 Start – Noha nastaven na ${clamped}%`);
         setTimeout(() => setCalibrationSavedToast(null), 2200);
       } else if (activeCalibrationTool === 'hand') {
-        const clamped = Math.min(65, Math.max(2, clickY));
+        const clamped = Math.min(60, Math.max(2, clickY));
         updateCalibrationField('finishY', clamped);
-        setCalibrationSavedToast(`🔴 Vrcholová linie (Cíl – Ruka) nastavena na ${clamped}%`);
+        setCalibrationSavedToast(`🔴 Cíl – Ruka nastaven na ${clamped}%`);
+        setTimeout(() => setCalibrationSavedToast(null), 2200);
+      } else if (activeCalibrationTool === 'split1') {
+        const clamped = Math.min(85, Math.max(25, clickY));
+        updateCalibrationField('split1Y', clamped);
+        setCalibrationSavedToast(`🔵 Mezičas 1 (${isYouthCategory ? '3.3m' : '5m'}) nastaven na ${clamped}%`);
         setTimeout(() => setCalibrationSavedToast(null), 2200);
       } else {
-        const clamped = Math.min(80, Math.max(18, clickY));
-        updateCalibrationField('midY', clamped);
-        setCalibrationSavedToast(`🔵 Středová linie (Mezičas – Ruka) nastavena na ${clamped}%`);
+        const clamped = Math.min(75, Math.max(12, clickY));
+        updateCalibrationField('split2Y', clamped);
+        setCalibrationSavedToast(`🟣 Mezičas 2 (${isYouthCategory ? '6.6m' : '10m'}) nastaven na ${clamped}%`);
         setTimeout(() => setCalibrationSavedToast(null), 2200);
       }
       return;
@@ -748,7 +834,14 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
           if (calLines) {
             const lines: { yPct: number; color: string }[] = [
               { yPct: calLines.finishY, color: 'rgba(239, 68, 68, 0.55)' },
-              { yPct: calLines.midY, color: 'rgba(59, 130, 246, 0.5)' },
+              ...(typeof calLines.split2Y === 'number'
+                ? [{ yPct: calLines.split2Y, color: 'rgba(167, 139, 250, 0.55)' }]
+                : []),
+              ...(typeof calLines.split1Y === 'number'
+                ? [{ yPct: calLines.split1Y, color: 'rgba(59, 130, 246, 0.55)' }]
+                : typeof calLines.midY === 'number'
+                ? [{ yPct: calLines.midY, color: 'rgba(59, 130, 246, 0.5)' }]
+                : []),
               { yPct: calLines.startY, color: 'rgba(16, 185, 129, 0.55)' },
             ];
             ctx.save();
@@ -1121,7 +1214,9 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const manualWallScanRef = useRef<boolean>(false);
   const split1TimeRef = useRef<number | null>(null);
   const split2TimeRef = useRef<number | null>(null);
-  const midSplitTimeRef = useRef<number | null>(null);
+  const reactionTimeRef = useRef<number>(0.138);
+  const isFalseStartRef = useRef<boolean>(false);
+  const ifscReactionPendingRef = useRef<boolean>(false);
 
   const recomputeVideoBox = useCallback(() => {
     const vp = viewportRef.current;
@@ -1192,7 +1287,8 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const prevFootYRef = useRef<number | null>(null);
   const prevHandsYRef = useRef<number | null>(null);
   const footArmedBelowLineRef = useRef<boolean>(false);
-  const midLineTriggeredRef = useRef<boolean>(false);
+  const split1LineTriggeredRef = useRef<boolean>(false);
+  const split2LineTriggeredRef = useRef<boolean>(false);
   const audioContextRef = useRef<AudioContext | null>(null);
   const micAnalyserRef = useRef<AnalyserNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -1542,6 +1638,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     const stopTs = performance.now();
     const finalMs = startTimeRef.current > 0 ? stopTs - startTimeRef.current : elapsedMs;
     startTimeRef.current = 0;
+    ifscReactionPendingRef.current = false;
     setElapsedMs(finalMs);
     setIsRunning(false);
     setCountdownState('idle');
@@ -1550,18 +1647,25 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     const totalSeconds = parseFloat((finalMs / 1000).toFixed(3));
     let s1 = split1TimeRef.current ?? split1Time;
     const rawS2 = split2TimeRef.current ?? split2Time;
-    const rawMid = midSplitTimeRef.current ?? midSplitTime;
-    let s2 = rawS2 ? parseFloat((rawS2 - (s1 ?? 0)).toFixed(2)) : null;
+    let s2: number | null = null;
 
-    // If AI Kamera captured a middle-of-wall crossing time, derive balanced 1/3 and 2/3 splits from it
-    if (rawMid !== null && rawS2 === null) {
-      s1 = parseFloat((rawMid * 0.64).toFixed(2));
-      s2 = parseFloat(Math.max(0.1, rawMid * 0.68).toFixed(2));
+    if (s1 !== null && rawS2 !== null) {
+      s2 = parseFloat(Math.max(0.1, rawS2 - s1).toFixed(2));
+    } else if (s1 === null && rawS2 !== null) {
+      // Gate 2 crossed cleanly even if Gate 1 was missed — derive Gate 1 & Gate 2 from actual 10m/6.6m mark
+      s1 = parseFloat((rawS2 * 0.48).toFixed(2));
+      s2 = parseFloat(Math.max(0.1, rawS2 - s1).toFixed(2));
+    } else if (s1 !== null && rawS2 === null) {
+      const remaining = Math.max(0.2, totalSeconds - s1);
+      s2 = parseFloat((remaining * 0.52).toFixed(2));
     }
 
     const resolvedS1 = s1 ?? parseFloat((totalSeconds * 0.31).toFixed(2));
     const resolvedS2 = s2 ?? parseFloat((totalSeconds * 0.35).toFixed(2));
     const resolvedS3 = parseFloat(Math.max(0.1, totalSeconds - resolvedS1 - resolvedS2).toFixed(2));
+
+    const resolvedReaction = parseFloat((reactionTimeRef.current ?? reactionTime).toFixed(3));
+    const resolvedFalseStart = Boolean(isFalseStartRef.current || isFalseStart);
 
     const finalRun: SpeedRun = {
       id: 'run-' + Date.now(),
@@ -1572,8 +1676,8 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         split2: resolvedS2,
         split3: resolvedS3,
       },
-      reactionTime: parseFloat(reactionTime.toFixed(3)),
-      isFalseStart: isFalseStart,
+      reactionTime: resolvedReaction,
+      isFalseStart: resolvedFalseStart,
       betaUsed: selectedBeta,
       routeCategory: currentCategory,
       gym: gymName,
@@ -1594,11 +1698,12 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     // Record +3 seconds after crossing red top finish line before finalizing clip
     schedulePostRollStop(persistedRun.id, stopTs, {
       startY: startZoneY,
-      midY: midZoneY,
+      split1Y: split1ZoneY,
+      split2Y: split2ZoneY,
       finishY: finishZoneY,
     });
 
-    if (persistedRun.isPersonalBest && !isFalseStart) {
+    if (persistedRun.isPersonalBest && !resolvedFalseStart) {
       try {
         confetti({
           particleCount: 80,
@@ -1614,7 +1719,6 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     elapsedMs,
     split1Time,
     split2Time,
-    midSplitTime,
     reactionTime,
     isFalseStart,
     selectedBeta,
@@ -1625,49 +1729,73 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     onRunFinished,
     schedulePostRollStop,
     startZoneY,
-    midZoneY,
+    split1ZoneY,
+    split2ZoneY,
     finishZoneY,
   ]);
 
   // Start Timer Execution
-  const startTimerNow = useCallback((measuredReaction: number = 0.135) => {
-    const isDQ = measuredReaction < 0.100;
-    if (isDQ) {
-      setIsFalseStart(true);
-      playFalseStartAlarm();
-    } else {
-      setIsFalseStart(false);
-    }
+  const startTimerNow = useCallback(
+    (measuredReaction: number = 0.135, pendingCameraReaction: boolean = false) => {
+      const isDQ = !pendingCameraReaction && measuredReaction < 0.100;
+      isFalseStartRef.current = isDQ;
+      ifscReactionPendingRef.current = pendingCameraReaction;
+      reactionTimeRef.current = measuredReaction;
 
-    const startTs = performance.now();
-    setReactionTime(measuredReaction);
-    setElapsedMs(0);
-    setSplit1Time(null);
-    setSplit2Time(null);
-    setMidSplitTime(null);
-    split1TimeRef.current = null;
-    split2TimeRef.current = null;
-    midSplitTimeRef.current = null;
-    midLineTriggeredRef.current = false;
-    setRecordedVideoUrl(null);
-    setPlaybackVideoSec(0);
-    setIsPlaybackPlaying(false);
-    setFinishedRun(null);
-    setShowDeleteVideoConfirm(false);
-    setIsRunning(true);
-    setCountdownState('started');
+      if (isDQ) {
+        setIsFalseStart(true);
+        setFalseStartReason(`Ulilý start (${measuredReaction.toFixed(3)}s < 0.100s)`);
+        playFalseStartAlarm();
+      } else {
+        setIsFalseStart(false);
+        setFalseStartReason(null);
+      }
 
-    // Lock active pre-roll video recording onto this run
-    startMediaRecording(startTs);
+      const startTs = performance.now();
+      setReactionTime(measuredReaction);
+      setElapsedMs(0);
+      setSplit1Time(null);
+      setSplit2Time(null);
+      split1TimeRef.current = null;
+      split2TimeRef.current = null;
+      split1LineTriggeredRef.current = false;
+      split2LineTriggeredRef.current = false;
+      setRecordedVideoUrl(null);
+      setPlaybackVideoSec(0);
+      setIsPlaybackPlaying(false);
+      setFinishedRun(null);
+      setShowDeleteVideoConfirm(false);
+      setIsRunning(true);
+      setCountdownState('started');
 
-    startTimeRef.current = startTs;
-    rafRef.current = requestAnimationFrame(updateTimer);
-  }, [updateTimer, startMediaRecording]);
+      // Lock active pre-roll video recording onto this run
+      startMediaRecording(startTs);
+
+      startTimeRef.current = startTs;
+      rafRef.current = requestAnimationFrame(updateTimer);
+    },
+    [updateTimer, startMediaRecording]
+  );
 
   const clearCountdownTimeouts = useCallback(() => {
     countdownTimeoutsRef.current.forEach((t) => clearTimeout(t));
     countdownTimeoutsRef.current = [];
   }, []);
+
+  const handlePreBeepFalseStart = useCallback(() => {
+    clearCountdownTimeouts();
+    ifscReactionPendingRef.current = false;
+    footArmedBelowLineRef.current = false;
+    isFalseStartRef.current = true;
+    reactionTimeRef.current = 0;
+    setReactionTime(0);
+    setIsFalseStart(true);
+    setFalseStartReason('Ulilý start! Noha opustila start před pípnutím.');
+    setCountdownState('idle');
+    playFalseStartAlarm();
+    setCalibrationSavedToast('🚨 ULILÝ START! Noha opustila blok před pípnutím');
+    setTimeout(() => setCalibrationSavedToast(null), 3500);
+  }, [clearCountdownTimeouts]);
 
   // Official IFSC Countdown Sequence: "At your marks" -> "Ready" -> 3 Beeps -> Random hold -> High start beep
   // If starter voice commands are turned off in Settings, skips directly to electronic IFSC beeps.
@@ -1675,6 +1803,10 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     if (isRunning) return;
     clearCountdownTimeouts();
     const audioConf = getStoredAudioSettings();
+    isFalseStartRef.current = false;
+    ifscReactionPendingRef.current = false;
+    setIsFalseStart(false);
+    setFalseStartReason(null);
     setElapsedMs(0);
     setFinishedRun(null);
     setShowDeleteVideoConfirm(false);
@@ -1695,8 +1827,12 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       const randomHold = 3000 + Math.random() * 200;
       const tStart = setTimeout(() => {
         playIFSCStartTone(audioConf.toneStyle);
-        const reaction = 0.115 + Math.random() * 0.045;
-        startTimerNow(reaction);
+        if (sensorStateRef.current.startMode === 'camera_motion') {
+          startTimerNow(0.0, true);
+        } else {
+          const reaction = 0.115 + Math.random() * 0.045;
+          startTimerNow(reaction, false);
+        }
       }, randomHold);
 
       countdownTimeoutsRef.current.push(tBeep2, tBeep3, tStart);
@@ -1731,15 +1867,19 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     clearCountdownTimeouts();
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     startTimeRef.current = 0;
+    ifscReactionPendingRef.current = false;
+    isFalseStartRef.current = false;
+    reactionTimeRef.current = 0.138;
     setIsRunning(false);
     setElapsedMs(0);
     setSplit1Time(null);
     setSplit2Time(null);
-    setMidSplitTime(null);
-    midLineTriggeredRef.current = false;
+    split1LineTriggeredRef.current = false;
+    split2LineTriggeredRef.current = false;
     footArmedBelowLineRef.current = false;
     setCountdownState('idle');
     setIsFalseStart(false);
+    setFalseStartReason(null);
     setShowDeleteVideoConfirm(false);
     stopMediaRecording();
   };
@@ -2125,11 +2265,18 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     }
   };
 
-  // Arm/Disarm AI Kamera or AI Zvuk Sensor
+  // Arm/Disarm AI Kamera or AI Zvuk Sensor (optionally runs IFSC Countdown in AI Kamera)
   const handleArmSensorStart = async () => {
-    if (countdownState === 'armed') {
-      setCountdownState('idle');
+    if (
+      countdownState === 'armed' ||
+      countdownState === 'marks' ||
+      countdownState === 'ready' ||
+      countdownState === 'beeps'
+    ) {
+      clearCountdownTimeouts();
+      ifscReactionPendingRef.current = false;
       footArmedBelowLineRef.current = false;
+      setCountdownState('idle');
       return;
     }
 
@@ -2146,16 +2293,30 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     }
 
     footArmedBelowLineRef.current = false;
-    midLineTriggeredRef.current = false;
+    split1LineTriggeredRef.current = false;
+    split2LineTriggeredRef.current = false;
+    ifscReactionPendingRef.current = false;
+    isFalseStartRef.current = false;
     setElapsedMs(0);
     setFinishedRun(null);
     setIsFalseStart(false);
+    setFalseStartReason(null);
+
+    if (startMode === 'camera_motion' && ifscStartWithCamera) {
+      if (trackedPoseRef.current.active && trackedPoseRef.current.foot.y >= startZoneY - 2.0) {
+        footArmedBelowLineRef.current = true;
+      }
+      triggerIFSCCountdown();
+      return;
+    }
+
     setCountdownState('armed');
   };
 
   // Keep dynamic sensor state & callbacks in a mutable ref so the sensor loop NEVER restarts on every timer tick!
   const sensorStateRef = useRef({
     startMode,
+    ifscStartWithCamera,
     countdownState,
     isRunning,
     soundThreshold,
@@ -2163,14 +2324,17 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     scannedSoundProfile,
     soundScanState,
     startZoneY,
-    midZoneY,
+    split1ZoneY,
+    split2ZoneY,
     finishZoneY,
     startTimerNow,
     stopTimer,
+    handlePreBeepFalseStart,
   });
 
   sensorStateRef.current = {
     startMode,
+    ifscStartWithCamera,
     countdownState,
     isRunning,
     soundThreshold,
@@ -2178,10 +2342,12 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     scannedSoundProfile,
     soundScanState,
     startZoneY,
-    midZoneY,
+    split1ZoneY,
+    split2ZoneY,
     finishZoneY,
     startTimerNow,
     stopTimer,
+    handlePreBeepFalseStart,
   };
 
   // Stable Audio Sensor Loop (runs uninterrupted at 20ms whenever microphone is active)
@@ -2394,40 +2560,94 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       const st = sensorStateRef.current;
       const liveElapsedMs = startTimeRef.current > 0 ? nowMs - startTimeRef.current : 0;
 
-      // LINE 1 TRIGGER (BOTTOM): Green Foot dot crosses upward past startZoneY -> START CHRONO
-      if (!st.isRunning && st.countdownState === 'armed') {
+      // PRE-START FOOT MONITORING (False Start detection during IFSC countdown OR Instant Start when armed)
+      if (!st.isRunning && st.startMode === 'camera_motion') {
         if (nextPose.foot.y >= st.startZoneY - 2.0) {
           footArmedBelowLineRef.current = true;
         }
-        const crossedUpward =
-          (prevFootY !== null && prevFootY >= st.startZoneY - 1.5 && nextPose.foot.y < st.startZoneY - 0.5) ||
-          (footArmedBelowLineRef.current && nextPose.foot.y < st.startZoneY - 1.0);
+        const footCrossedUpward =
+          (prevFootY !== null && prevFootY >= st.startZoneY - 1.5 && nextPose.foot.y < st.startZoneY - 0.8) ||
+          (footArmedBelowLineRef.current && nextPose.foot.y < st.startZoneY - 1.1);
 
-        if (crossedUpward) {
+        const isIfscPreStart =
+          st.ifscStartWithCamera &&
+          (st.countdownState === 'marks' || st.countdownState === 'ready' || st.countdownState === 'beeps');
+
+        if (isIfscPreStart && footCrossedUpward) {
+          setLastLineTrigger('start');
+          setTimeout(() => setLastLineTrigger(null), 1500);
+          st.handlePreBeepFalseStart();
+          return;
+        }
+
+        if (st.countdownState === 'armed' && footCrossedUpward) {
           footArmedBelowLineRef.current = false;
           setLastLineTrigger('start');
           setTimeout(() => setLastLineTrigger(null), 1200);
           playIFSCStartTone();
-          st.startTimerNow(0.125);
+          st.startTimerNow(0.125, false);
         }
       }
 
-      // LINE 2 TRIGGER (MIDDLE): Red Hands dot crosses upward past midZoneY -> RECORD SPLIT
-      if (st.isRunning && liveElapsedMs > 250 && !midLineTriggeredRef.current) {
-        if (nextPose.hands.y <= st.midZoneY + 0.5) {
-          midLineTriggeredRef.current = true;
+      // POST-BEEP REACTION MEASUREMENT: capture exact time when green foot dot leaves startZoneY
+      if (st.isRunning && ifscReactionPendingRef.current) {
+        if (nextPose.foot.y >= st.startZoneY - 2.0) {
+          footArmedBelowLineRef.current = true;
+        }
+        const leftAfterBeep =
+          (prevFootY !== null && prevFootY >= st.startZoneY - 1.5 && nextPose.foot.y < st.startZoneY - 0.8) ||
+          (footArmedBelowLineRef.current && nextPose.foot.y < st.startZoneY - 1.0) ||
+          (liveElapsedMs > 60 && nextPose.foot.y < st.startZoneY - 2.0);
+
+        if (leftAfterBeep) {
+          ifscReactionPendingRef.current = false;
+          footArmedBelowLineRef.current = false;
+          const measuredRt = Math.max(0.015, parseFloat((liveElapsedMs / 1000).toFixed(3)));
+          reactionTimeRef.current = measuredRt;
+          setReactionTime(measuredRt);
+          setLastLineTrigger('start');
+          setTimeout(() => setLastLineTrigger(null), 1200);
+
+          if (measuredRt < 0.100) {
+            isFalseStartRef.current = true;
+            setIsFalseStart(true);
+            setFalseStartReason(`Ulilý start (${measuredRt.toFixed(3)}s < 0.100s)`);
+            playFalseStartAlarm();
+            setCalibrationSavedToast(`🚨 ULILÝ START! Reakce ${measuredRt.toFixed(3)}s (< 0.100s)`);
+          } else {
+            setCalibrationSavedToast(`⚡ Reakce na startu: ${measuredRt.toFixed(3)}s`);
+          }
+          setTimeout(() => setCalibrationSavedToast(null), 2600);
+        }
+      }
+
+      // LINE 2 TRIGGER (SPLIT 1 - 5m / 3.3m): Red Hands dot crosses upward past split1ZoneY
+      if (st.isRunning && liveElapsedMs > 180 && !split1LineTriggeredRef.current) {
+        if (nextPose.hands.y <= st.split1ZoneY + 0.5) {
+          split1LineTriggeredRef.current = true;
           const splitSec = parseFloat((liveElapsedMs / 1000).toFixed(2));
-          midSplitTimeRef.current = splitSec;
           split1TimeRef.current = splitSec;
-          setMidSplitTime(splitSec);
           setSplit1Time(splitSec);
           playSplitChime();
-          setLastLineTrigger('mid');
+          setLastLineTrigger('split1');
           setTimeout(() => setLastLineTrigger(null), 1200);
         }
       }
 
-      // LINE 3 TRIGGER (TOP): Red Hands dot crosses/exceeds finishZoneY -> STOP CHRONO & SAVE
+      // LINE 3 TRIGGER (SPLIT 2 - 10m / 6.6m): Red Hands dot crosses upward past split2ZoneY
+      if (st.isRunning && liveElapsedMs > 450 && !split2LineTriggeredRef.current) {
+        if (nextPose.hands.y <= st.split2ZoneY + 0.5) {
+          split2LineTriggeredRef.current = true;
+          const cumulativeSec = parseFloat((liveElapsedMs / 1000).toFixed(2));
+          split2TimeRef.current = cumulativeSec;
+          setSplit2Time(cumulativeSec);
+          playSplitChime();
+          setLastLineTrigger('split2');
+          setTimeout(() => setLastLineTrigger(null), 1200);
+        }
+      }
+
+      // LINE 4 TRIGGER (TOP FINISH - 15m / 10m): Red Hands dot crosses/exceeds finishZoneY -> STOP CHRONO & SAVE
       if (st.isRunning && liveElapsedMs > 900) {
         if (nextPose.hands.y <= st.finishZoneY + 0.5) {
           setLastLineTrigger('finish');
@@ -3046,7 +3266,6 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     setLastLineTrigger(null);
     split1TimeRef.current = null;
     split2TimeRef.current = null;
-    midSplitTimeRef.current = null;
     prevFootYRef.current = null;
     prevHandsYRef.current = null;
     showGestureFeedback('🔄 Časomíra restartována (00.000s)');
@@ -3339,10 +3558,24 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                       ? 'bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 border-red-300 dark:border-red-900'
                       : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-transparent hover:bg-slate-200'
                   }`}
-                  title="Kalibrace spodní, středové a vrcholové linie"
+                  title="Kalibrace linií Start, 5m/3.3m, 10m/6.6m a Cíl"
                 >
                   <Sliders className="w-3.5 h-3.5" />
                   <span>Kalibrace</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={toggleIfscStartWithCamera}
+                  className={`min-h-[38px] px-2.5 sm:px-3 py-1 rounded-xl font-bold transition-all flex items-center gap-1 border ${
+                    ifscStartWithCamera
+                      ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-800'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-transparent hover:bg-slate-200'
+                  }`}
+                  title="Zapnout/vypnout IFSC zvukový odpočet a hlídání ulitého startu v režimu AI Kamera"
+                >
+                  <Zap className="w-3.5 h-3.5" />
+                  <span>{ifscStartWithCamera ? 'IFSC start: ZAP' : 'IFSC start: VYP'}</span>
                 </button>
 
                 <button
@@ -3805,8 +4038,13 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                     <strong className="text-white">
                       {isRunning
                         ? 'DOHMAT (STOP)'
-                        : countdownState === 'armed'
-                        ? 'ZRUŠENÍ HLÍDÁNÍ'
+                        : countdownState === 'armed' ||
+                          countdownState === 'marks' ||
+                          countdownState === 'ready' ||
+                          countdownState === 'beeps'
+                        ? 'ZRUŠENÍ STARTU'
+                        : isAiCameraMode && ifscStartWithCamera
+                        ? 'IFSC START + AI'
                         : 'START ČASOMÍRY'}
                     </strong>
                   </span>
@@ -3849,37 +4087,55 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
               </div>
             )}
 
-            {/* Floating Lock/Unlock Pill inside Fullscreen Camera (easy 1-tap access without exiting) */}
+            {/* Floating Lock/Unlock & IFSC Countdown Pills inside Fullscreen Camera (easy 1-tap access without exiting) */}
             {isCameraExpanded && isAiCameraMode && !isCalibrating && !finishedRun && (
-              <button
-                type="button"
+              <div
                 data-no-gesture="true"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (lockedClimber) {
-                    unlockClimber();
-                  } else {
-                    setIsPickingClimber((prev) => !prev);
-                  }
-                }}
-                className={`absolute bottom-3 left-3 z-30 px-2.5 py-1.5 rounded-xl text-[11px] font-bold border shadow-lg backdrop-blur-sm flex items-center gap-1.5 transition-all active:scale-95 ${
-                  lockedClimber
-                    ? 'bg-emerald-950/85 text-emerald-200 border-emerald-400/60'
-                    : isPickingClimber
-                    ? 'bg-amber-500 text-slate-950 border-amber-200 animate-pulse'
-                    : 'bg-slate-950/85 hover:bg-slate-900 text-white border-white/20'
-                }`}
-                title="Klepněte na osobu v obraze pro zafixování sledování"
+                onClick={(e) => e.stopPropagation()}
+                className="absolute bottom-3 left-3 z-30 flex flex-wrap items-center gap-1.5"
               >
-                {lockedClimber ? <Lock className="w-3.5 h-3.5 text-emerald-400" /> : <Unlock className="w-3.5 h-3.5" />}
-                <span>
-                  {lockedClimber
-                    ? 'Zafixováno · Odemknout'
-                    : isPickingClimber
-                    ? 'Klepni na osobu...'
-                    : 'Zafixovat osobu'}
-                </span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (lockedClimber) {
+                      unlockClimber();
+                    } else {
+                      setIsPickingClimber((prev) => !prev);
+                    }
+                  }}
+                  className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold border shadow-lg backdrop-blur-sm flex items-center gap-1.5 transition-all active:scale-95 ${
+                    lockedClimber
+                      ? 'bg-emerald-950/85 text-emerald-200 border-emerald-400/60'
+                      : isPickingClimber
+                      ? 'bg-amber-500 text-slate-950 border-amber-200 animate-pulse'
+                      : 'bg-slate-950/85 hover:bg-slate-900 text-white border-white/20'
+                  }`}
+                  title="Klepněte na osobu v obraze pro zafixování sledování"
+                >
+                  {lockedClimber ? <Lock className="w-3.5 h-3.5 text-emerald-400" /> : <Unlock className="w-3.5 h-3.5" />}
+                  <span>
+                    {lockedClimber
+                      ? 'Zafixováno · Odemknout'
+                      : isPickingClimber
+                      ? 'Klepni na osobu...'
+                      : 'Zafixovat osobu'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={toggleIfscStartWithCamera}
+                  className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold border shadow-lg backdrop-blur-sm flex items-center gap-1 transition-all active:scale-95 ${
+                    ifscStartWithCamera
+                      ? 'bg-amber-950/85 text-amber-200 border-amber-400/60'
+                      : 'bg-slate-950/85 hover:bg-slate-900 text-slate-300 border-white/20'
+                  }`}
+                  title="Zapnout/vypnout IFSC zvukový odpočet a hlídání ulitého startu"
+                >
+                  <Zap className={`w-3.5 h-3.5 ${ifscStartWithCamera ? 'text-amber-400' : 'text-slate-400'}`} />
+                  <span>{ifscStartWithCamera ? 'IFSC: ZAP' : 'IFSC: VYP'}</span>
+                </button>
+              </div>
             )}
 
             {/* AI Kamera Overlay ONLY: Aligned 1:1 with rendered video pixels */}
@@ -3957,14 +4213,14 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                   </div>
                 </div>
 
-                {/* 🔵 MIDDLE LINE: Split (Red Hands Dot) - Draggable when calibrating */}
+                {/* 🟣 SPLIT 2 LINE (10m / 6.6m): Red Hands Dot - Draggable when calibrating */}
                 <div
                   data-calibration-line="true"
-                  style={{ top: `${midZoneY}%` }}
-                  onPointerDown={(e) => handleLinePointerDown('mid', e)}
-                  onPointerMove={(e) => handleLinePointerMove('mid', e)}
-                  onPointerUp={(e) => handleLinePointerUp('mid', e)}
-                  onPointerCancel={(e) => handleLinePointerUp('mid', e)}
+                  style={{ top: `${split2ZoneY}%` }}
+                  onPointerDown={(e) => handleLinePointerDown('split2', e)}
+                  onPointerMove={(e) => handleLinePointerMove('split2', e)}
+                  onPointerUp={(e) => handleLinePointerUp('split2', e)}
+                  onPointerCancel={(e) => handleLinePointerUp('split2', e)}
                   onClick={(e) => {
                     if (isCalibrating) e.stopPropagation();
                   }}
@@ -3976,9 +4232,61 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                 >
                   <div
                     className={`w-full border-t-2 relative transition-shadow ${
-                      draggingLine === 'mid'
+                      draggingLine === 'split2'
+                        ? 'border-violet-200 shadow-[0_0_20px_rgba(167,139,250,1)]'
+                        : lastLineTrigger === 'split2' || split2Time !== null
+                        ? 'border-violet-300 shadow-[0_0_16px_rgba(167,139,250,0.95)]'
+                        : isCalibrating
+                        ? 'border-violet-400'
+                        : 'border-dashed border-violet-400/90'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between -translate-y-1/2 px-1">
+                      <span
+                        className={`px-2 py-0.5 rounded-full bg-violet-950/90 border text-violet-100 text-[10px] font-bold shadow-md flex items-center gap-1.5 transition-transform ${
+                          draggingLine === 'split2'
+                            ? 'border-white scale-105 ring-2 ring-violet-400'
+                            : isCalibrating
+                            ? 'border-violet-400 ring-1 ring-violet-400/50'
+                            : 'border-violet-500/60'
+                        }`}
+                      >
+                        <span className="w-2 h-2 rounded-full bg-violet-400" />
+                        <span>
+                          2. MEZIČAS – Ruka ({isYouthCategory ? '6.6m' : '10m'})
+                          {split2Time !== null ? ` · ${split2Time.toFixed(2)}s` : ''}
+                        </span>
+                        {isCalibrating && <span className="text-violet-300 font-black">↕</span>}
+                      </span>
+                      <span className="px-1.5 py-0.5 rounded bg-black/85 text-violet-300 font-mono text-[9px] border border-violet-500/50">
+                        Y:{split2ZoneY}%
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 🔵 SPLIT 1 LINE (5m / 3.3m): Red Hands Dot - Draggable when calibrating */}
+                <div
+                  data-calibration-line="true"
+                  style={{ top: `${split1ZoneY}%` }}
+                  onPointerDown={(e) => handleLinePointerDown('split1', e)}
+                  onPointerMove={(e) => handleLinePointerMove('split1', e)}
+                  onPointerUp={(e) => handleLinePointerUp('split1', e)}
+                  onPointerCancel={(e) => handleLinePointerUp('split1', e)}
+                  onClick={(e) => {
+                    if (isCalibrating) e.stopPropagation();
+                  }}
+                  className={`absolute left-2 right-2 -translate-y-1/2 py-4 flex items-center ${
+                    isCalibrating
+                      ? 'pointer-events-auto cursor-ns-resize touch-none'
+                      : 'pointer-events-none'
+                  }`}
+                >
+                  <div
+                    className={`w-full border-t-2 relative transition-shadow ${
+                      draggingLine === 'split1'
                         ? 'border-blue-200 shadow-[0_0_20px_rgba(96,165,250,1)]'
-                        : lastLineTrigger === 'mid' || midSplitTime !== null
+                        : lastLineTrigger === 'split1' || split1Time !== null
                         ? 'border-blue-300 shadow-[0_0_16px_rgba(96,165,250,0.95)]'
                         : isCalibrating
                         ? 'border-blue-400'
@@ -3988,7 +4296,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                     <div className="flex items-center justify-between -translate-y-1/2 px-1">
                       <span
                         className={`px-2 py-0.5 rounded-full bg-blue-950/90 border text-blue-100 text-[10px] font-bold shadow-md flex items-center gap-1.5 transition-transform ${
-                          draggingLine === 'mid'
+                          draggingLine === 'split1'
                             ? 'border-white scale-105 ring-2 ring-blue-400'
                             : isCalibrating
                             ? 'border-blue-400 ring-1 ring-blue-400/50'
@@ -3997,13 +4305,13 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                       >
                         <span className="w-2 h-2 rounded-full bg-blue-400" />
                         <span>
-                          STŘED – Mezičas ({isYouthCategory ? '5m' : '7.5m'})
-                          {midSplitTime !== null ? ` · ${midSplitTime.toFixed(2)}s` : ''}
+                          1. MEZIČAS – Ruka ({isYouthCategory ? '3.3m' : '5m'})
+                          {split1Time !== null ? ` · ${split1Time.toFixed(2)}s` : ''}
                         </span>
                         {isCalibrating && <span className="text-blue-300 font-black">↕</span>}
                       </span>
                       <span className="px-1.5 py-0.5 rounded bg-black/85 text-blue-300 font-mono text-[9px] border border-blue-500/50">
-                        Y:{midZoneY}%
+                        Y:{split1ZoneY}%
                       </span>
                     </div>
                   </div>
@@ -4180,9 +4488,21 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
               </div>
             )}
 
-            {/* High-visibility Chrono Overlay during active climb or countdown */}
-            {(isRunning || elapsedMs > 0 || countdownState !== 'idle') && (
+            {/* High-visibility Chrono Overlay during active climb, countdown, or false start */}
+            {(isRunning || elapsedMs > 0 || countdownState !== 'idle' || isFalseStart) && (
               <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none p-4 z-20">
+                {isFalseStart && !isRunning && (
+                  <div className="mb-2 px-4 py-1.5 bg-red-600 text-white font-black text-xs uppercase tracking-wider rounded-full shadow-lg flex items-center gap-1.5 animate-bounce">
+                    <AlertTriangle className="w-4 h-4" />
+                    <span>
+                      {falseStartReason ||
+                        (reactionTime === 0
+                          ? 'ULILÝ START (před pípnutím)'
+                          : `ULILÝ START (${reactionTime.toFixed(3)}s < 0.100s)`)}
+                    </span>
+                  </div>
+                )}
+
                 {countdownState === 'armed' && (
                   <div className="mb-2 px-4 py-1.5 bg-emerald-500/90 text-white font-black text-xs uppercase tracking-wider rounded-full shadow-lg animate-pulse">
                     {isAiCameraMode
@@ -4196,7 +4516,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                     <span>
                       {countdownState === 'marks' && '🏁 AT YOUR MARKS (NA MÍSTA)'}
                       {countdownState === 'ready' && '⚡ READY (PŘIPRAVIT SE)'}
-                      {countdownState === 'beeps' && '🔊 3... 2... 1...'}
+                      {countdownState === 'beeps' && '🔊 3... 2... 1... (HLÍDÁM ULITÝ START)'}
                     </span>
                   </div>
                 )}
@@ -4214,9 +4534,9 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                 onClick={(e) => e.stopPropagation()}
                 className="absolute bottom-2.5 left-2.5 right-2.5 z-30 p-2 rounded-2xl bg-slate-950/90 border border-white/20 backdrop-blur-md space-y-1.5 shadow-2xl"
               >
-                {/* Row 1: Select Line + Micro-Nudge (-1% / +1%) */}
+                {/* Row 1: Select Line (Start, 5m/3.3m, 10m/6.6m, Cíl) + Micro-Nudge (-1% / +1%) */}
                 <div className="flex flex-wrap items-center justify-between gap-1.5">
-                  <div className="flex items-center gap-1">
+                  <div className="flex flex-wrap items-center gap-1">
                     <button
                       type="button"
                       onClick={() => setActiveCalibrationTool('foot')}
@@ -4231,15 +4551,31 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                     </button>
                     <button
                       type="button"
-                      onClick={() => setActiveCalibrationTool('mid')}
+                      onClick={() => setActiveCalibrationTool('split1')}
                       className={`px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-all ${
-                        activeCalibrationTool === 'mid'
+                        activeCalibrationTool === 'split1'
                           ? 'bg-blue-600 text-white ring-1 ring-blue-300'
                           : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
                       }`}
                     >
                       <span className="w-2 h-2 rounded-full bg-blue-300" />
-                      <span>Střed {midZoneY}%</span>
+                      <span>
+                        {isYouthCategory ? '3.3m' : '5m'} {split1ZoneY}%
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveCalibrationTool('split2')}
+                      className={`px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-all ${
+                        activeCalibrationTool === 'split2'
+                          ? 'bg-violet-600 text-white ring-1 ring-violet-300'
+                          : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                      }`}
+                    >
+                      <span className="w-2 h-2 rounded-full bg-violet-300" />
+                      <span>
+                        {isYouthCategory ? '6.6m' : '10m'} {split2ZoneY}%
+                      </span>
                     </button>
                     <button
                       type="button"
@@ -4265,7 +4601,9 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                             ? 'startY'
                             : activeCalibrationTool === 'hand'
                             ? 'finishY'
-                            : 'midY',
+                            : activeCalibrationTool === 'split1'
+                            ? 'split1Y'
+                            : 'split2Y',
                           -1
                         )
                       }
@@ -4283,7 +4621,9 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                             ? 'startY'
                             : activeCalibrationTool === 'hand'
                             ? 'finishY'
-                            : 'midY',
+                            : activeCalibrationTool === 'split1'
+                            ? 'split1Y'
+                            : 'split2Y',
                           1
                         )
                       }
@@ -4360,8 +4700,19 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                   <div className="flex items-center gap-2">
                     <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
                     <div>
-                      <div className="text-lg font-mono font-black text-white leading-none">
-                        {finishedRun.totalTime.toFixed(3)}s
+                      <div className="text-lg font-mono font-black text-white leading-none flex items-center gap-2">
+                        <span>{finishedRun.totalTime.toFixed(3)}s</span>
+                        {finishedRun.isFalseStart ? (
+                          <span className="px-1.5 py-0.5 rounded bg-red-600 text-white text-[10px] font-black">
+                            ULILÝ START
+                          </span>
+                        ) : (
+                          finishedRun.reactionTime > 0 && (
+                            <span className="text-[10px] text-amber-300 font-bold">
+                              ⚡ {finishedRun.reactionTime.toFixed(3)}s
+                            </span>
+                          )
+                        )}
                       </div>
                       <div className="text-[10px] text-slate-300 font-mono mt-0.5">
                         {finishedRun.splits.split1.toFixed(2)}s · {finishedRun.splits.split2.toFixed(2)}s ·{' '}
@@ -4507,7 +4858,11 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                   <Target className="w-4 h-4 text-emerald-500 shrink-0" />
                   <span>
                     {isAiCameraMode
-                      ? `🟢 Noha překročí spodní linii (${startZoneY}%) → Start | 🔴 Ruka střed (${midZoneY}%) → Mezičas | 🔴 Ruka vrchol (${finishZoneY}%) → Stop.`
+                      ? `🟢 Start Noha (${startZoneY}%) → 🔵 ${isYouthCategory ? '3.3m' : '5m'} (${split1ZoneY}%) → 🟣 ${
+                          isYouthCategory ? '6.6m' : '10m'
+                        } (${split2ZoneY}%) → 🔴 Cíl (${finishZoneY}%)${
+                          ifscStartWithCamera ? ' · IFSC odpočet + hlídání ulitého startu ZAP' : ''
+                        }`
                       : 'Kamera nahrává video výlezu. Klepnutím na displej spustíte nebo zastavíte časomíru.'}
                   </span>
                 </div>
@@ -4545,7 +4900,12 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
           {isFalseStart && (
             <div className="mb-2 inline-flex items-center gap-2 px-3 py-1 bg-red-600 text-white font-extrabold text-xs uppercase tracking-wider rounded-full shadow-lg animate-bounce">
               <AlertTriangle className="w-4 h-4" />
-              <span>Ulilý start ({reactionTime.toFixed(3)}s &lt; 0.100s)</span>
+              <span>
+                {falseStartReason ||
+                  (reactionTime === 0
+                    ? 'Ulilý start (před pípnutím)'
+                    : `Ulilý start (${reactionTime.toFixed(3)}s < 0.100s)`)}
+              </span>
             </div>
           )}
 
@@ -4644,15 +5004,26 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
             <button
               onClick={handleArmSensorStart}
               className={`flex-1 sm:flex-none min-h-[56px] sm:min-w-[220px] px-6 py-3 font-black text-base rounded-2xl shadow-lg transition-all flex items-center justify-center gap-2 ${
-                countdownState === 'armed'
+                countdownState === 'armed' ||
+                countdownState === 'marks' ||
+                countdownState === 'ready' ||
+                countdownState === 'beeps'
                   ? 'bg-amber-500 hover:bg-amber-400 text-slate-950'
                   : 'bg-red-600 hover:bg-red-500 text-white'
               }`}
             >
-              {countdownState === 'armed' ? (
+              {countdownState === 'armed' ||
+              countdownState === 'marks' ||
+              countdownState === 'ready' ||
+              countdownState === 'beeps' ? (
                 <>
                   <Square className="w-5 h-5 fill-current" />
-                  <span>Zrušit hlídání</span>
+                  <span>{countdownState === 'armed' ? 'Zrušit hlídání' : 'Zrušit odpočet'}</span>
+                </>
+              ) : startMode === 'camera_motion' && ifscStartWithCamera ? (
+                <>
+                  <Play className="w-5 h-5 fill-current" />
+                  <span>Start (IFSC + AI)</span>
                 </>
               ) : (
                 <>
@@ -4694,7 +5065,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       {finishedRun && (
         <div className="p-4 sm:p-5 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl space-y-3.5 animate-in fade-in">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <CheckCircle2 className="w-5 h-5 text-emerald-500" />
               <span className="text-xl sm:text-2xl font-mono font-black text-slate-950 dark:text-white">
                 {finishedRun.totalTime.toFixed(3)}s
@@ -4707,7 +5078,18 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                   ? '10m U15'
                   : '10m U13'}
               </span>
-              {finishedRun.isPersonalBest && (
+              {finishedRun.isFalseStart ? (
+                <span className="px-2 py-0.5 rounded-full bg-red-600 text-white text-[11px] font-black">
+                  🚨 ULILÝ START
+                </span>
+              ) : (
+                finishedRun.reactionTime > 0 && (
+                  <span className="text-xs font-mono font-bold text-amber-600 dark:text-amber-400">
+                    · ⚡ Reakce {finishedRun.reactionTime.toFixed(3)}s
+                  </span>
+                )
+              )}
+              {finishedRun.isPersonalBest && !finishedRun.isFalseStart && (
                 <span className="text-xs font-black text-amber-600 dark:text-amber-400">
                   · Nový PB!
                 </span>

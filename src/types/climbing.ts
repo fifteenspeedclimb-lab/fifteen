@@ -38,7 +38,9 @@ export interface VideoTimingMeta {
 
 export interface VideoCalibrationLines {
   startY: number;
-  midY: number;
+  split1Y?: number;
+  split2Y?: number;
+  midY?: number;
   finishY: number;
 }
 
