@@ -21,8 +21,6 @@ import {
   Maximize2,
   Minimize2,
   Sliders,
-  ChevronUp,
-  ChevronDown,
   Check,
   Activity,
   Info,
@@ -274,8 +272,8 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const split1ZoneY = activeCalibration.split1Y ?? (currentCategory === 'adults_15m' ? 58 : 68);
   const startZoneY = activeCalibration.startY;
 
-  // Active calibration line tool & live drag state
-  const [activeCalibrationTool, setActiveCalibrationTool] = useState<'foot' | 'split1' | 'split2' | 'hand'>('foot');
+  // Active inline long-press editor & live drag state
+  const [editingLine, setEditingLine] = useState<'foot' | 'split1' | 'split2' | 'hand' | null>(null);
   const [draggingLine, setDraggingLine] = useState<'foot' | 'split1' | 'split2' | 'hand' | null>(null);
 
   // Video saving feedback & modal state
@@ -446,40 +444,110 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     }
   };
 
-  // Direct Touch/Pointer Dragging on AI Kamera Lines
+  const getLineToastLabel = (line: 'foot' | 'split1' | 'split2' | 'hand', val: number) => {
+    if (line === 'foot') return `🟢 Start – Noha nastaven na ${val}%`;
+    if (line === 'hand') return `🔴 Cíl – Ruka nastaven na ${val}%`;
+    if (line === 'split1') return `🔵 Mezičas 1 (${isYouthCategory ? '3.3m' : '5m'}) nastaven na ${val}%`;
+    return `🟣 Mezičas 2 (${isYouthCategory ? '6.6m' : '10m'}) nastaven na ${val}%`;
+  };
+
+  const getLinePercentValue = (line: 'foot' | 'split1' | 'split2' | 'hand') => {
+    if (line === 'foot') return startZoneY;
+    if (line === 'hand') return finishZoneY;
+    if (line === 'split1') return split1ZoneY;
+    return split2ZoneY;
+  };
+
+  const clearLongPressTimer = () => {
+    if (longPressTimerRef.current !== null) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    longPressMetaRef.current = null;
+  };
+
+  // Direct Touch/Pointer Dragging on AI Kamera Lines (with 280ms Long-Press Activation)
   const handleLinePointerDown = (
     line: 'foot' | 'split1' | 'split2' | 'hand',
     e: React.PointerEvent<HTMLDivElement>
   ) => {
-    if (!isAiCameraMode || !isCalibrating) return;
-    e.stopPropagation();
-    e.preventDefault();
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId);
-    } catch {
-      // ignore if capture unsupported
+    if (!isAiCameraMode || isRunning || isPickingClimber) return;
+
+    // If this line is already open for editing or calibration mode is active, start dragging immediately
+    if (isCalibrating || editingLine === line) {
+      clearLongPressTimer();
+      e.stopPropagation();
+      e.preventDefault();
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        // ignore if capture unsupported
+      }
+      setEditingLine(line);
+      setDraggingLine(line);
+      return;
     }
-    setActiveCalibrationTool(line);
-    setDraggingLine(line);
+
+    // Otherwise start a 280ms hold timer so normal vertical scrolling still works if finger moves immediately
+    clearLongPressTimer();
+    const targetEl = e.currentTarget;
+    const pointerId = e.pointerId;
+    longPressMetaRef.current = {
+      line,
+      startX: e.clientX,
+      startY: e.clientY,
+      pointerId,
+      targetEl,
+    };
+
+    longPressTimerRef.current = window.setTimeout(() => {
+      const meta = longPressMetaRef.current;
+      longPressTimerRef.current = null;
+      if (!meta || meta.line !== line) return;
+      try {
+        meta.targetEl?.setPointerCapture(meta.pointerId);
+      } catch {
+        // ignore if capture unsupported
+      }
+      try {
+        navigator.vibrate?.(18);
+      } catch {
+        // ignore
+      }
+      justDraggedRef.current = true;
+      setEditingLine(line);
+      setDraggingLine(line);
+    }, 280);
   };
 
   const handleLinePointerMove = (
     line: 'foot' | 'split1' | 'split2' | 'hand',
     e: React.PointerEvent<HTMLDivElement>
   ) => {
-    if (draggingLine !== line || !lineDragBoxRef.current) return;
-    e.stopPropagation();
-    const boxRect = lineDragBoxRef.current.getBoundingClientRect();
-    const rawPct = Math.round(((e.clientY - boxRect.top) / Math.max(1, boxRect.height)) * 100);
+    if (draggingLine === line && lineDragBoxRef.current) {
+      e.stopPropagation();
+      const boxRect = lineDragBoxRef.current.getBoundingClientRect();
+      const rawPct = Math.round(((e.clientY - boxRect.top) / Math.max(1, boxRect.height)) * 100);
 
-    if (line === 'foot') {
-      updateCalibrationField('startY', Math.min(95, Math.max(55, rawPct)));
-    } else if (line === 'hand') {
-      updateCalibrationField('finishY', Math.min(60, Math.max(2, rawPct)));
-    } else if (line === 'split1') {
-      updateCalibrationField('split1Y', Math.min(85, Math.max(25, rawPct)));
-    } else {
-      updateCalibrationField('split2Y', Math.min(75, Math.max(12, rawPct)));
+      if (line === 'foot') {
+        updateCalibrationField('startY', Math.min(95, Math.max(55, rawPct)));
+      } else if (line === 'hand') {
+        updateCalibrationField('finishY', Math.min(60, Math.max(2, rawPct)));
+      } else if (line === 'split1') {
+        updateCalibrationField('split1Y', Math.min(85, Math.max(25, rawPct)));
+      } else {
+        updateCalibrationField('split2Y', Math.min(75, Math.max(12, rawPct)));
+      }
+      return;
+    }
+
+    // Cancel pending long-press if user moves finger > 10px (e.g. scrolling the page)
+    const meta = longPressMetaRef.current;
+    if (meta && meta.line === line) {
+      const dist = Math.hypot(e.clientX - meta.startX, e.clientY - meta.startY);
+      if (dist > 10) {
+        clearLongPressTimer();
+      }
     }
   };
 
@@ -487,6 +555,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     line: 'foot' | 'split1' | 'split2' | 'hand',
     e: React.PointerEvent<HTMLDivElement>
   ) => {
+    clearLongPressTimer();
     if (draggingLine !== line) return;
     e.stopPropagation();
     try {
@@ -497,27 +566,12 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     justDraggedRef.current = true;
     setTimeout(() => {
       justDraggedRef.current = false;
-    }, 90);
+    }, 120);
     setDraggingLine(null);
 
-    const val =
-      line === 'foot'
-        ? startZoneY
-        : line === 'hand'
-        ? finishZoneY
-        : line === 'split1'
-        ? split1ZoneY
-        : split2ZoneY;
-    const label =
-      line === 'foot'
-        ? `🟢 Start – Noha nastaven na ${val}%`
-        : line === 'hand'
-        ? `🔴 Cíl – Ruka nastaven na ${val}%`
-        : line === 'split1'
-        ? `🔵 Mezičas 1 (${isYouthCategory ? '3.3m' : '5m'}) nastaven na ${val}%`
-        : `🟣 Mezičas 2 (${isYouthCategory ? '6.6m' : '10m'}) nastaven na ${val}%`;
-    setCalibrationSavedToast(label);
-    setTimeout(() => setCalibrationSavedToast(null), 2000);
+    const val = getLinePercentValue(line);
+    setCalibrationSavedToast(getLineToastLabel(line, val));
+    setTimeout(() => setCalibrationSavedToast(null), 1800);
   };
 
   // Lock / Unlock specific climber by coordinates so passersby cannot steal tracking
@@ -542,7 +596,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     setTimeout(() => setCalibrationSavedToast(null), 1800);
   }, []);
 
-  // Viewfinder Click: handles climber tap-to-lock, AI Kamera line calibration, or starts/stops timer
+  // Viewfinder Click: handles climber tap-to-lock, closing active line editor, or starts/stops timer
   const handleViewfinderClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (justDraggedRef.current || draggingLine || justSwipedRef.current) return;
 
@@ -582,30 +636,10 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       return;
     }
 
-    if (isAiCameraMode && isCalibrating) {
-      const clickY = Math.round(getBoxPercentCoords().y);
-
-      if (activeCalibrationTool === 'foot') {
-        const clamped = Math.min(95, Math.max(55, clickY));
-        updateCalibrationField('startY', clamped);
-        setCalibrationSavedToast(`🟢 Start – Noha nastaven na ${clamped}%`);
-        setTimeout(() => setCalibrationSavedToast(null), 2200);
-      } else if (activeCalibrationTool === 'hand') {
-        const clamped = Math.min(60, Math.max(2, clickY));
-        updateCalibrationField('finishY', clamped);
-        setCalibrationSavedToast(`🔴 Cíl – Ruka nastaven na ${clamped}%`);
-        setTimeout(() => setCalibrationSavedToast(null), 2200);
-      } else if (activeCalibrationTool === 'split1') {
-        const clamped = Math.min(85, Math.max(25, clickY));
-        updateCalibrationField('split1Y', clamped);
-        setCalibrationSavedToast(`🔵 Mezičas 1 (${isYouthCategory ? '3.3m' : '5m'}) nastaven na ${clamped}%`);
-        setTimeout(() => setCalibrationSavedToast(null), 2200);
-      } else {
-        const clamped = Math.min(75, Math.max(12, clickY));
-        updateCalibrationField('split2Y', clamped);
-        setCalibrationSavedToast(`🟣 Mezičas 2 (${isYouthCategory ? '6.6m' : '10m'}) nastaven na ${clamped}%`);
-        setTimeout(() => setCalibrationSavedToast(null), 2200);
-      }
+    if (isAiCameraMode && (editingLine || isCalibrating)) {
+      setEditingLine(null);
+      setIsCalibrating(false);
+      saveCalibrationExplicit();
       return;
     }
 
@@ -668,7 +702,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     const hasPoseData = Boolean(withPoseOverlay && poseTimeline && poseTimeline.length > 0);
     const exportFps = videoTargetFps;
 
-    const cacheKey = `${run.id}_v4_${exportFps}fps_${hasPoseData ? 'pose' : 'clean'}_${run.totalTime.toFixed(3)}`;
+    const cacheKey = `${run.id}_v5_${exportFps}fps_${hasPoseData ? 'pose' : 'clean'}_${run.totalTime.toFixed(3)}`;
     if (exportedVideoCacheRef.current?.key === cacheKey) {
       return exportedVideoCacheRef.current.result;
     }
@@ -701,6 +735,25 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       return fallbackRawBlob();
     }
 
+    // Pause background AI detection, live camera video, and idle pre-roll recorders during export
+    // so hardware encoder/decoder resources aren't starved by parallel work
+    isExportingVideoRef.current = true;
+    const liveVideo = videoRef.current;
+    const wasLivePlaying = Boolean(liveVideo && !liveVideo.paused);
+    if (liveVideo && wasLivePlaying) {
+      try {
+        liveVideo.pause();
+      } catch {
+        // ignore
+      }
+    }
+    if (!sensorStateRef.current.isRunning && !postRollActiveRef.current) {
+      discardRecorderSlot(primaryRecSlotRef.current);
+      discardRecorderSlot(standbyRecSlotRef.current);
+      primaryRecSlotRef.current = null;
+      standbyRecSlotRef.current = null;
+    }
+
     try {
       const offscreenVideo = document.createElement('video');
       offscreenVideo.src = run.videoUrl;
@@ -722,7 +775,10 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       });
 
       // Seek to pre-roll start (3s before crossing green start line) if supported
-      const trimStartSec = timing ? Math.max(0, timing.preRollStartSec) : 0;
+      const vidDurLimit = Number.isFinite(offscreenVideo.duration) && offscreenVideo.duration > 0.4
+        ? offscreenVideo.duration - 0.3
+        : Number.POSITIVE_INFINITY;
+      const trimStartSec = timing ? Math.max(0, Math.min(timing.preRollStartSec, vidDurLimit)) : 0;
       const trimEndSec = timing ? timing.postRollEndSec : Number.POSITIVE_INFINITY;
       if (trimStartSec > 0.12) {
         await new Promise<void>((resolve) => {
@@ -749,25 +805,37 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       const exportCanvas = document.createElement('canvas');
       exportCanvas.width = W;
       exportCanvas.height = H;
-      const ctx = exportCanvas.getContext('2d', { alpha: false, desynchronized: true });
+      // Avoid desynchronized:true here so captureStream always reads complete, synchronized frames
+      const ctx = exportCanvas.getContext('2d', { alpha: false });
 
       if (!ctx || typeof exportCanvas.captureStream !== 'function') {
         return fallbackRawBlob();
       }
 
-      const stream = exportCanvas.captureStream(exportFps);
+      // Probe manual frame-push support: captureStream(0) + videoTrack.requestFrame()
+      // prevents async timer beat-jitter (duplicated/skipped frames)
+      let stream = exportCanvas.captureStream(0);
+      let videoTrack = stream.getVideoTracks()[0] as (MediaStreamTrack & { requestFrame?: () => void }) | undefined;
+      const supportsManualFrame = typeof videoTrack?.requestFrame === 'function';
+      if (!supportsManualFrame) {
+        stream.getTracks().forEach((tr) => tr.stop());
+        stream = exportCanvas.captureStream(exportFps);
+        videoTrack = stream.getVideoTracks()[0] as (MediaStreamTrack & { requestFrame?: () => void }) | undefined;
+      }
+
+      // Prefer native MP4/AVC or fast VP8 over Chromium's WebM+H264 (which often causes playback judder)
       const mimeTypes = [
-        'video/webm;codecs=h264',
         'video/mp4;codecs=avc1',
-        'video/webm;codecs=vp8',
-        'video/webm',
         'video/mp4',
+        'video/webm;codecs=vp8',
         'video/webm;codecs=vp9',
+        'video/webm',
+        'video/webm;codecs=h264',
       ];
       const mimeType = mimeTypes.find((type) => MediaRecorder.isTypeSupported(type)) || '';
       const recOptions: MediaRecorderOptions = {
         ...(mimeType ? { mimeType } : {}),
-        videoBitsPerSecond: exportFps === 60 ? 8_000_000 : 5_000_000,
+        videoBitsPerSecond: exportFps === 60 ? 6_000_000 : 4_200_000,
       };
       let recorder: MediaRecorder;
       try {
@@ -779,6 +847,31 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       recorder.ondataavailable = (ev) => {
         if (ev.data && ev.data.size > 0) chunks.push(ev.data);
       };
+
+      // Pre-compute static HUD dimensions once instead of measuring text on every exported frame
+      const minDim = Math.min(W, H);
+      const padX = Math.round(W * 0.03);
+      const padY = Math.round(H * 0.035);
+      const timeFontSize = Math.max(22, Math.round(minDim * 0.068));
+      const subFontSize = Math.max(11, Math.round(minDim * 0.024));
+      const timeFontStr = `900 ${timeFontSize}px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace`;
+      const subFontStr = `700 ${subFontSize}px system-ui, -apple-system, sans-serif`;
+
+      ctx.font = timeFontStr;
+      const timeMetrics = ctx.measureText(maxTimeReference);
+      ctx.font = subFontStr;
+      const subMetrics = ctx.measureText(`${baseClimberLabel} · START`);
+
+      const innerPadX = Math.round(minDim * 0.026);
+      const innerPadY = Math.round(minDim * 0.018);
+      const accentW = Math.max(4, Math.round(minDim * 0.009));
+      const boxW = Math.max(timeMetrics.width, subMetrics.width) + innerPadX * 2 + accentW + 8;
+      const boxH = subFontSize + timeFontSize + innerPadY * 2 + Math.round(minDim * 0.012);
+      const boxX = W - padX - boxW;
+      const boxY = padY;
+      const radius = Math.max(8, Math.round(minDim * 0.022));
+      const textStartX = boxX + innerPadX * 0.5 + accentW + Math.round(innerPadX * 0.65);
+      const timeTextY = boxY + innerPadY + subFontSize + Math.round(minDim * 0.008);
 
       const drawPoseDot = (
         pxPct: number,
@@ -824,10 +917,12 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         ctx.restore();
       };
 
-      const drawWatermarkFrame = (forceFinal = false) => {
+      const drawWatermarkFrame = (forceFinal = false, frameMediaTime?: number) => {
         ctx.drawImage(offscreenVideo, 0, 0, W, H);
-        const minDim = Math.min(W, H);
-        const vidTime = offscreenVideo.currentTime || 0;
+        const vidTime =
+          typeof frameMediaTime === 'number' && Number.isFinite(frameMediaTime)
+            ? frameMediaTime
+            : offscreenVideo.currentTime || 0;
 
         // Optional AI Pose Tracking Overlay (Hand, Body, Foot + Skeleton + Trigger Lines)
         if (hasPoseData) {
@@ -915,26 +1010,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
           ? `${baseClimberLabel} · START`
           : baseClimberLabel;
 
-        // Top-right live chrono badge
-        const padX = Math.round(W * 0.03);
-        const padY = Math.round(H * 0.035);
-        const timeFontSize = Math.max(22, Math.round(minDim * 0.068));
-        const subFontSize = Math.max(11, Math.round(minDim * 0.024));
-
-        ctx.font = `900 ${timeFontSize}px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace`;
-        const timeMetrics = ctx.measureText(maxTimeReference);
-        ctx.font = `700 ${subFontSize}px system-ui, -apple-system, sans-serif`;
-        const subMetrics = ctx.measureText(`${baseClimberLabel} · START`);
-
-        const innerPadX = Math.round(minDim * 0.026);
-        const innerPadY = Math.round(minDim * 0.018);
-        const accentW = Math.max(4, Math.round(minDim * 0.009));
-        const boxW = Math.max(timeMetrics.width, subMetrics.width) + innerPadX * 2 + accentW + 8;
-        const boxH = subFontSize + timeFontSize + innerPadY * 2 + Math.round(minDim * 0.012);
-        const boxX = W - padX - boxW;
-        const boxY = padY;
-        const radius = Math.max(8, Math.round(minDim * 0.022));
-
+        // Top-right live chrono badge (using pre-computed box layout)
         ctx.save();
         ctx.fillStyle = 'rgba(9, 13, 24, 0.84)';
         ctx.strokeStyle = isFinishedFrame
@@ -955,32 +1031,46 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         ctx.fillStyle = isFinishedFrame ? '#10b981' : isPreStart ? '#f59e0b' : '#ef4444';
         ctx.fillRect(boxX + innerPadX * 0.5, boxY + innerPadY, accentW, boxH - innerPadY * 2);
 
-        const textStartX = boxX + innerPadX * 0.5 + accentW + Math.round(innerPadX * 0.65);
-
         ctx.fillStyle = isFinishedFrame
           ? 'rgba(167, 243, 208, 0.98)'
           : isPreStart
           ? 'rgba(253, 230, 138, 0.98)'
           : 'rgba(203, 213, 225, 0.95)';
-        ctx.font = `700 ${subFontSize}px system-ui, -apple-system, sans-serif`;
+        ctx.font = subFontStr;
         ctx.textBaseline = 'top';
         ctx.fillText(topLabel, textStartX, boxY + innerPadY);
 
         ctx.fillStyle = '#ffffff';
-        ctx.font = `900 ${timeFontSize}px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace`;
-        ctx.fillText(timeText, textStartX, boxY + innerPadY + subFontSize + Math.round(minDim * 0.008));
+        ctx.font = timeFontStr;
+        ctx.fillText(timeText, textStartX, timeTextY);
         ctx.restore();
       };
 
       const exportedBlob = await new Promise<Blob>((resolve, reject) => {
         let exportRafId = 0;
+        let exportRvfcId = 0;
         let stopped = false;
         let recordingStarted = false;
+        let lastDrawnMediaTime = -1;
+
+        type VideoWithRVFC = HTMLVideoElement & {
+          requestVideoFrameCallback?: (cb: (now: number, metadata: { mediaTime: number }) => void) => number;
+          cancelVideoFrameCallback?: (id: number) => void;
+        };
+        const vidWithRvfc = offscreenVideo as VideoWithRVFC;
+        const hasRVFC = typeof vidWithRvfc.requestVideoFrameCallback === 'function';
 
         const finishExport = () => {
           if (stopped) return;
           stopped = true;
           cancelAnimationFrame(exportRafId);
+          if (hasRVFC && exportRvfcId && typeof vidWithRvfc.cancelVideoFrameCallback === 'function') {
+            try {
+              vidWithRvfc.cancelVideoFrameCallback(exportRvfcId);
+            } catch {
+              // ignore
+            }
+          }
           try {
             offscreenVideo.pause();
           } catch {
@@ -1016,27 +1106,65 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
           reject(new Error('recorder error'));
         };
 
-        const renderLoop = () => {
+        const pushCanvasFrame = () => {
+          if (supportsManualFrame && videoTrack?.requestFrame) {
+            try {
+              videoTrack.requestFrame();
+            } catch {
+              // ignore
+            }
+          }
+        };
+
+        const handleDecodedFrame = (tNow: number) => {
           if (stopped) return;
-          const tNow = offscreenVideo.currentTime || 0;
-          if (!recordingStarted && tNow >= Math.max(0, trimStartSec - 0.08)) {
+
+          if (!recordingStarted && tNow >= Math.max(0, trimStartSec - 0.12)) {
             recordingStarted = true;
             try {
-              recorder.start(100);
+              // Start WITHOUT 100ms timeslice so MediaRecorder doesn't stall every 100ms flushing clusters
+              recorder.start();
             } catch {
               // ignore
             }
           }
 
-          drawWatermarkFrame(false);
+          drawWatermarkFrame(false, tNow);
+          if (recordingStarted) {
+            pushCanvasFrame();
+          }
 
           if (tNow >= trimEndSec) {
-            drawWatermarkFrame(true);
-            setTimeout(finishExport, 220);
-            return;
+            drawWatermarkFrame(true, tNow);
+            if (recordingStarted) pushCanvasFrame();
+            setTimeout(finishExport, 140);
+            return true;
+          }
+          return false;
+        };
+
+        const rvfcLoop = (_now: number, metadata: { mediaTime: number }) => {
+          if (stopped) return;
+          const tNow = metadata?.mediaTime ?? offscreenVideo.currentTime ?? 0;
+          if (tNow > lastDrawnMediaTime + 0.0005 || !recordingStarted) {
+            lastDrawnMediaTime = tNow;
+            if (handleDecodedFrame(tNow)) return;
+          }
+          if (!offscreenVideo.ended && !offscreenVideo.paused && vidWithRvfc.requestVideoFrameCallback) {
+            exportRvfcId = vidWithRvfc.requestVideoFrameCallback(rvfcLoop);
+          }
+        };
+
+        const rafLoop = () => {
+          if (stopped) return;
+          const tNow = offscreenVideo.currentTime || 0;
+          // Only draw & push when the decoded video timestamp actually advanced (avoids duplicate-frame stutter)
+          if (tNow > lastDrawnMediaTime + 0.001 || !recordingStarted) {
+            lastDrawnMediaTime = tNow;
+            if (handleDecodedFrame(tNow)) return;
           }
           if (!offscreenVideo.ended && !offscreenVideo.paused) {
-            exportRafId = requestAnimationFrame(renderLoop);
+            exportRafId = requestAnimationFrame(rafLoop);
           }
         };
 
@@ -1044,24 +1172,29 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
           if (!recordingStarted) {
             recordingStarted = true;
             try {
-              recorder.start(100);
+              recorder.start();
             } catch {
               // ignore
             }
           }
-          drawWatermarkFrame(true);
-          setTimeout(finishExport, 260);
+          drawWatermarkFrame(true, offscreenVideo.currentTime || trimEndSec);
+          pushCanvasFrame();
+          setTimeout(finishExport, 180);
         };
 
-        drawWatermarkFrame(false);
-        if (offscreenVideo.currentTime >= Math.max(0, trimStartSec - 0.08)) {
-          recordingStarted = true;
-          recorder.start(100);
+        // Pre-render first frame onto canvas before play starts
+        drawWatermarkFrame(false, offscreenVideo.currentTime || trimStartSec);
+
+        if (hasRVFC && vidWithRvfc.requestVideoFrameCallback) {
+          exportRvfcId = vidWithRvfc.requestVideoFrameCallback(rvfcLoop);
         }
+
         offscreenVideo
           .play()
           .then(() => {
-            exportRafId = requestAnimationFrame(renderLoop);
+            if (!hasRVFC) {
+              exportRafId = requestAnimationFrame(rafLoop);
+            }
           })
           .catch((err) => {
             clearTimeout(safetyTimer);
@@ -1078,6 +1211,11 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       return result;
     } catch {
       return fallbackRawBlob();
+    } finally {
+      isExportingVideoRef.current = false;
+      if (liveVideo && wasLivePlaying && cameraActive) {
+        liveVideo.play().catch(() => {});
+      }
     }
   };
 
@@ -1182,6 +1320,14 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const lineDragBoxRef = useRef<HTMLDivElement | null>(null);
   const justDraggedRef = useRef<boolean>(false);
   const justSwipedRef = useRef<boolean>(false);
+  const longPressTimerRef = useRef<number | null>(null);
+  const longPressMetaRef = useRef<{
+    line: 'foot' | 'split1' | 'split2' | 'hand';
+    startX: number;
+    startY: number;
+    pointerId: number;
+    targetEl: HTMLDivElement | null;
+  } | null>(null);
   const gestureToastTimerRef = useRef<NodeJS.Timeout | null>(null);
   const touchGestureRef = useRef<{
     active: boolean;
@@ -1210,6 +1356,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     key: string;
     result: { blob: Blob; ext: string; mimeType: string };
   } | null>(null);
+  const isExportingVideoRef = useRef<boolean>(false);
   const cameraStartTsRef = useRef<number>(0);
   const manualWallScanRef = useRef<boolean>(false);
   const split1TimeRef = useRef<number | null>(null);
@@ -1321,12 +1468,12 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
   const pickRecorderMime = () => {
     const mimeTypes = [
-      'video/webm;codecs=h264',
       'video/mp4;codecs=avc1',
-      'video/webm;codecs=vp8',
-      'video/webm',
       'video/mp4',
+      'video/webm;codecs=vp8',
       'video/webm;codecs=vp9',
+      'video/webm',
+      'video/webm;codecs=h264',
     ];
     return (
       mimeTypes.find((type) => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(type)) || ''
@@ -1359,7 +1506,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
           slot.chunks.push(e.data);
         }
       };
-      recorder.start(200);
+      recorder.start(1000);
       return slot;
     } catch {
       return null;
@@ -1413,7 +1560,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
     const maintainPreRoll = () => {
       const stream = mediaStreamRef.current;
-      if (!stream || sensorStateRef.current.isRunning || postRollActiveRef.current) return;
+      if (!stream || sensorStateRef.current.isRunning || postRollActiveRef.current || isExportingVideoRef.current) return;
 
       const now = performance.now();
       if (!primaryRecSlotRef.current) {
@@ -1765,6 +1912,9 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       setIsPlaybackPlaying(false);
       setFinishedRun(null);
       setShowDeleteVideoConfirm(false);
+      setEditingLine(null);
+      setIsCalibrating(false);
+      setDraggingLine(null);
       setIsRunning(true);
       setCountdownState('started');
 
@@ -1881,6 +2031,8 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     setIsFalseStart(false);
     setFalseStartReason(null);
     setShowDeleteVideoConfirm(false);
+    setEditingLine(null);
+    setDraggingLine(null);
     stopMediaRecording();
   };
 
@@ -2767,7 +2919,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     };
 
     const processCameraFrame = () => {
-      if (stopped) return;
+      if (stopped || isExportingVideoRef.current) return;
       const st = sensorStateRef.current;
       const video = videoRef.current;
       const canvas = canvasRef.current;
@@ -3551,7 +3703,11 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                   onClick={() => {
                     const next = !isCalibrating;
                     setIsCalibrating(next);
-                    if (next) setShowGuides(true);
+                    if (next) {
+                      setShowGuides(true);
+                    } else {
+                      setEditingLine(null);
+                    }
                   }}
                   className={`min-h-[38px] px-2.5 sm:px-3 py-1 rounded-xl font-bold transition-all flex items-center gap-1 border ${
                     isCalibrating
@@ -3952,8 +4108,12 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
               isCameraExpanded
                 ? 'flex-1 min-h-0 w-full rounded-none border-0 touch-none'
                 : cameraFit === 'contain'
-                ? 'w-full h-[68vh] min-h-[520px] max-h-[820px] rounded-3xl border-2 border-slate-800 shadow-2xl hover:ring-2 hover:ring-red-500/40 touch-pan-y'
-                : 'w-full aspect-[4/3] sm:aspect-video rounded-3xl border-2 border-slate-800 shadow-2xl hover:ring-2 hover:ring-red-500/40 touch-pan-y'
+                ? `w-full h-[68vh] min-h-[520px] max-h-[820px] rounded-3xl border-2 border-slate-800 shadow-2xl hover:ring-2 hover:ring-red-500/40 ${
+                    draggingLine ? 'touch-none' : 'touch-pan-y'
+                  }`
+                : `w-full aspect-[4/3] sm:aspect-video rounded-3xl border-2 border-slate-800 shadow-2xl hover:ring-2 hover:ring-red-500/40 ${
+                    draggingLine ? 'touch-none' : 'touch-pan-y'
+                  }`
             }`}
           >
             <video
@@ -4028,8 +4188,8 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
               </div>
             )}
 
-            {/* Quick Tap Action Floating Badge at Top (hidden during fullscreen expanded mode and calibration) */}
-            {!isCameraExpanded && !(isAiCameraMode && isCalibrating) && (
+            {/* Quick Tap Action Floating Badge at Top (hidden during fullscreen expanded mode and line calibration) */}
+            {!isCameraExpanded && !(isAiCameraMode && (isCalibrating || editingLine)) && (
               <div className="absolute top-3 left-3 right-3 flex items-center justify-center pointer-events-none z-20">
                 <div className="px-3 py-1 rounded-full bg-slate-950/80 text-white/90 text-[11px] font-bold border border-white/20 shadow-md backdrop-blur-sm flex items-center gap-1.5">
                   <Play className="w-3 h-3 fill-current text-red-500" />
@@ -4062,7 +4222,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
             )}
 
             {/* Floating Expand/Collapse Button right inside Viewfinder for easy 1-tap reach on phone */}
-            {!isCameraExpanded && !isCalibrating && (
+            {!isCameraExpanded && !isCalibrating && !editingLine && (
               <button
                 type="button"
                 data-no-gesture="true"
@@ -4088,7 +4248,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
             )}
 
             {/* Floating Lock/Unlock & IFSC Countdown Pills inside Fullscreen Camera (easy 1-tap access without exiting) */}
-            {isCameraExpanded && isAiCameraMode && !isCalibrating && !finishedRun && (
+            {isCameraExpanded && isAiCameraMode && !isCalibrating && !editingLine && !finishedRun && (
               <div
                 data-no-gesture="true"
                 onClick={(e) => e.stopPropagation()}
@@ -4164,26 +4324,36 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                 {/* Subtle vertical center guide */}
                 <div className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2 w-px border-l border-dashed border-white/15" />
 
-                {/* 🔴 TOP LINE: Finish (Red Hands Dot) - Draggable when calibrating */}
+                {/* 🔴 TOP LINE: Finish (Red Hands Dot) - Hold ~0.3s to calibrate & drag */}
                 <div
                   data-calibration-line="true"
                   style={{ top: `${finishZoneY}%` }}
+                  onContextMenu={(e) => {
+                    if (isAiCameraMode && showGuides && !isRunning) e.preventDefault();
+                  }}
                   onPointerDown={(e) => handleLinePointerDown('hand', e)}
                   onPointerMove={(e) => handleLinePointerMove('hand', e)}
                   onPointerUp={(e) => handleLinePointerUp('hand', e)}
                   onPointerCancel={(e) => handleLinePointerUp('hand', e)}
                   onClick={(e) => {
-                    if (isCalibrating) e.stopPropagation();
+                    if (editingLine === 'hand' || isCalibrating || justDraggedRef.current) {
+                      e.stopPropagation();
+                    } else if (editingLine) {
+                      e.stopPropagation();
+                      setEditingLine('hand');
+                    }
                   }}
                   className={`absolute left-2 right-2 -translate-y-1/2 py-4 flex items-center ${
-                    isCalibrating
-                      ? 'pointer-events-auto cursor-ns-resize touch-none'
+                    !isRunning
+                      ? editingLine === 'hand' || isCalibrating
+                        ? 'pointer-events-auto cursor-ns-resize touch-none z-20'
+                        : 'pointer-events-auto cursor-grab touch-pan-y'
                       : 'pointer-events-none'
                   }`}
                 >
                   <div
                     className={`w-full border-t-2 relative transition-shadow ${
-                      draggingLine === 'hand'
+                      draggingLine === 'hand' || editingLine === 'hand'
                         ? 'border-red-300 shadow-[0_0_20px_rgba(248,113,113,1)]'
                         : lastLineTrigger === 'finish'
                         ? 'border-red-400 shadow-[0_0_16px_rgba(248,113,113,0.95)]'
@@ -4195,7 +4365,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                     <div className="flex items-center justify-between -translate-y-1/2 px-1">
                       <span
                         className={`px-2 py-0.5 rounded-full bg-red-950/90 border text-red-100 text-[10px] font-bold shadow-md flex items-center gap-1.5 transition-transform ${
-                          draggingLine === 'hand'
+                          draggingLine === 'hand' || editingLine === 'hand'
                             ? 'border-white scale-105 ring-2 ring-red-400'
                             : isCalibrating
                             ? 'border-red-400 ring-1 ring-red-400/50'
@@ -4204,35 +4374,91 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                       >
                         <span className="w-2 h-2 rounded-full bg-red-500" />
                         <span>CÍL – Ruka ({routeDef.heightMeters}m)</span>
-                        {isCalibrating && <span className="text-red-300 font-black">↕</span>}
+                        {(isCalibrating || editingLine === 'hand') && <span className="text-red-300 font-black">↕</span>}
                       </span>
                       <span className="px-1.5 py-0.5 rounded bg-black/85 text-red-300 font-mono text-[9px] border border-red-500/50">
                         Y:{finishZoneY}%
                       </span>
                     </div>
+
+                    {editingLine === 'hand' && !isRunning && (
+                      <div
+                        data-no-gesture="true"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onPointerMove={(e) => e.stopPropagation()}
+                        onPointerUp={(e) => e.stopPropagation()}
+                        onTouchStart={(e) => e.stopPropagation()}
+                        onClick={(e) => e.stopPropagation()}
+                        className={`absolute left-1/2 -translate-x-1/2 z-30 flex items-center gap-1 px-2 py-1 rounded-xl bg-slate-950/95 border border-red-400/70 shadow-2xl backdrop-blur-md whitespace-nowrap ${
+                          finishZoneY < 24 ? 'top-full mt-2' : 'bottom-full mb-2'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => updateCalibration('finishY', -1)}
+                          className="w-8 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 active:scale-95 text-white font-black text-sm flex items-center justify-center"
+                          title="Posunout výš (-1%)"
+                        >
+                          −
+                        </button>
+                        <span className="px-2 font-mono text-[11px] font-black text-red-200 min-w-[44px] text-center">
+                          {finishZoneY}%
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => updateCalibration('finishY', 1)}
+                          className="w-8 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 active:scale-95 text-white font-black text-sm flex items-center justify-center"
+                          title="Posunout níž (+1%)"
+                        >
+                          +
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            saveCalibrationExplicit();
+                            setEditingLine(null);
+                            setIsCalibrating(false);
+                          }}
+                          className="ml-1 px-2.5 h-7 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white text-[11px] font-bold flex items-center gap-1"
+                          title="Uložit a zavřít"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
 
-                {/* 🟣 SPLIT 2 LINE (10m / 6.6m): Red Hands Dot - Draggable when calibrating */}
+                {/* 🟣 SPLIT 2 LINE (10m / 6.6m): Red Hands Dot - Hold ~0.3s to calibrate & drag */}
                 <div
                   data-calibration-line="true"
                   style={{ top: `${split2ZoneY}%` }}
+                  onContextMenu={(e) => {
+                    if (isAiCameraMode && showGuides && !isRunning) e.preventDefault();
+                  }}
                   onPointerDown={(e) => handleLinePointerDown('split2', e)}
                   onPointerMove={(e) => handleLinePointerMove('split2', e)}
                   onPointerUp={(e) => handleLinePointerUp('split2', e)}
                   onPointerCancel={(e) => handleLinePointerUp('split2', e)}
                   onClick={(e) => {
-                    if (isCalibrating) e.stopPropagation();
+                    if (editingLine === 'split2' || isCalibrating || justDraggedRef.current) {
+                      e.stopPropagation();
+                    } else if (editingLine) {
+                      e.stopPropagation();
+                      setEditingLine('split2');
+                    }
                   }}
                   className={`absolute left-2 right-2 -translate-y-1/2 py-4 flex items-center ${
-                    isCalibrating
-                      ? 'pointer-events-auto cursor-ns-resize touch-none'
+                    !isRunning
+                      ? editingLine === 'split2' || isCalibrating
+                        ? 'pointer-events-auto cursor-ns-resize touch-none z-20'
+                        : 'pointer-events-auto cursor-grab touch-pan-y'
                       : 'pointer-events-none'
                   }`}
                 >
                   <div
                     className={`w-full border-t-2 relative transition-shadow ${
-                      draggingLine === 'split2'
+                      draggingLine === 'split2' || editingLine === 'split2'
                         ? 'border-violet-200 shadow-[0_0_20px_rgba(167,139,250,1)]'
                         : lastLineTrigger === 'split2' || split2Time !== null
                         ? 'border-violet-300 shadow-[0_0_16px_rgba(167,139,250,0.95)]'
@@ -4244,7 +4470,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                     <div className="flex items-center justify-between -translate-y-1/2 px-1">
                       <span
                         className={`px-2 py-0.5 rounded-full bg-violet-950/90 border text-violet-100 text-[10px] font-bold shadow-md flex items-center gap-1.5 transition-transform ${
-                          draggingLine === 'split2'
+                          draggingLine === 'split2' || editingLine === 'split2'
                             ? 'border-white scale-105 ring-2 ring-violet-400'
                             : isCalibrating
                             ? 'border-violet-400 ring-1 ring-violet-400/50'
@@ -4256,35 +4482,93 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                           2. MEZIČAS – Ruka ({isYouthCategory ? '6.6m' : '10m'})
                           {split2Time !== null ? ` · ${split2Time.toFixed(2)}s` : ''}
                         </span>
-                        {isCalibrating && <span className="text-violet-300 font-black">↕</span>}
+                        {(isCalibrating || editingLine === 'split2') && (
+                          <span className="text-violet-300 font-black">↕</span>
+                        )}
                       </span>
                       <span className="px-1.5 py-0.5 rounded bg-black/85 text-violet-300 font-mono text-[9px] border border-violet-500/50">
                         Y:{split2ZoneY}%
                       </span>
                     </div>
+
+                    {editingLine === 'split2' && !isRunning && (
+                      <div
+                        data-no-gesture="true"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onPointerMove={(e) => e.stopPropagation()}
+                        onPointerUp={(e) => e.stopPropagation()}
+                        onTouchStart={(e) => e.stopPropagation()}
+                        onClick={(e) => e.stopPropagation()}
+                        className={`absolute left-1/2 -translate-x-1/2 z-30 flex items-center gap-1 px-2 py-1 rounded-xl bg-slate-950/95 border border-violet-400/70 shadow-2xl backdrop-blur-md whitespace-nowrap ${
+                          split2ZoneY < 24 ? 'top-full mt-2' : 'bottom-full mb-2'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => updateCalibration('split2Y', -1)}
+                          className="w-8 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 active:scale-95 text-white font-black text-sm flex items-center justify-center"
+                          title="Posunout výš (-1%)"
+                        >
+                          −
+                        </button>
+                        <span className="px-2 font-mono text-[11px] font-black text-violet-200 min-w-[44px] text-center">
+                          {split2ZoneY}%
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => updateCalibration('split2Y', 1)}
+                          className="w-8 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 active:scale-95 text-white font-black text-sm flex items-center justify-center"
+                          title="Posunout níž (+1%)"
+                        >
+                          +
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            saveCalibrationExplicit();
+                            setEditingLine(null);
+                            setIsCalibrating(false);
+                          }}
+                          className="ml-1 px-2.5 h-7 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white text-[11px] font-bold flex items-center gap-1"
+                          title="Uložit a zavřít"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
 
-                {/* 🔵 SPLIT 1 LINE (5m / 3.3m): Red Hands Dot - Draggable when calibrating */}
+                {/* 🔵 SPLIT 1 LINE (5m / 3.3m): Red Hands Dot - Hold ~0.3s to calibrate & drag */}
                 <div
                   data-calibration-line="true"
                   style={{ top: `${split1ZoneY}%` }}
+                  onContextMenu={(e) => {
+                    if (isAiCameraMode && showGuides && !isRunning) e.preventDefault();
+                  }}
                   onPointerDown={(e) => handleLinePointerDown('split1', e)}
                   onPointerMove={(e) => handleLinePointerMove('split1', e)}
                   onPointerUp={(e) => handleLinePointerUp('split1', e)}
                   onPointerCancel={(e) => handleLinePointerUp('split1', e)}
                   onClick={(e) => {
-                    if (isCalibrating) e.stopPropagation();
+                    if (editingLine === 'split1' || isCalibrating || justDraggedRef.current) {
+                      e.stopPropagation();
+                    } else if (editingLine) {
+                      e.stopPropagation();
+                      setEditingLine('split1');
+                    }
                   }}
                   className={`absolute left-2 right-2 -translate-y-1/2 py-4 flex items-center ${
-                    isCalibrating
-                      ? 'pointer-events-auto cursor-ns-resize touch-none'
+                    !isRunning
+                      ? editingLine === 'split1' || isCalibrating
+                        ? 'pointer-events-auto cursor-ns-resize touch-none z-20'
+                        : 'pointer-events-auto cursor-grab touch-pan-y'
                       : 'pointer-events-none'
                   }`}
                 >
                   <div
                     className={`w-full border-t-2 relative transition-shadow ${
-                      draggingLine === 'split1'
+                      draggingLine === 'split1' || editingLine === 'split1'
                         ? 'border-blue-200 shadow-[0_0_20px_rgba(96,165,250,1)]'
                         : lastLineTrigger === 'split1' || split1Time !== null
                         ? 'border-blue-300 shadow-[0_0_16px_rgba(96,165,250,0.95)]'
@@ -4296,7 +4580,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                     <div className="flex items-center justify-between -translate-y-1/2 px-1">
                       <span
                         className={`px-2 py-0.5 rounded-full bg-blue-950/90 border text-blue-100 text-[10px] font-bold shadow-md flex items-center gap-1.5 transition-transform ${
-                          draggingLine === 'split1'
+                          draggingLine === 'split1' || editingLine === 'split1'
                             ? 'border-white scale-105 ring-2 ring-blue-400'
                             : isCalibrating
                             ? 'border-blue-400 ring-1 ring-blue-400/50'
@@ -4308,35 +4592,93 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                           1. MEZIČAS – Ruka ({isYouthCategory ? '3.3m' : '5m'})
                           {split1Time !== null ? ` · ${split1Time.toFixed(2)}s` : ''}
                         </span>
-                        {isCalibrating && <span className="text-blue-300 font-black">↕</span>}
+                        {(isCalibrating || editingLine === 'split1') && (
+                          <span className="text-blue-300 font-black">↕</span>
+                        )}
                       </span>
                       <span className="px-1.5 py-0.5 rounded bg-black/85 text-blue-300 font-mono text-[9px] border border-blue-500/50">
                         Y:{split1ZoneY}%
                       </span>
                     </div>
+
+                    {editingLine === 'split1' && !isRunning && (
+                      <div
+                        data-no-gesture="true"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onPointerMove={(e) => e.stopPropagation()}
+                        onPointerUp={(e) => e.stopPropagation()}
+                        onTouchStart={(e) => e.stopPropagation()}
+                        onClick={(e) => e.stopPropagation()}
+                        className={`absolute left-1/2 -translate-x-1/2 z-30 flex items-center gap-1 px-2 py-1 rounded-xl bg-slate-950/95 border border-blue-400/70 shadow-2xl backdrop-blur-md whitespace-nowrap ${
+                          split1ZoneY < 24 ? 'top-full mt-2' : 'bottom-full mb-2'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => updateCalibration('split1Y', -1)}
+                          className="w-8 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 active:scale-95 text-white font-black text-sm flex items-center justify-center"
+                          title="Posunout výš (-1%)"
+                        >
+                          −
+                        </button>
+                        <span className="px-2 font-mono text-[11px] font-black text-blue-200 min-w-[44px] text-center">
+                          {split1ZoneY}%
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => updateCalibration('split1Y', 1)}
+                          className="w-8 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 active:scale-95 text-white font-black text-sm flex items-center justify-center"
+                          title="Posunout níž (+1%)"
+                        >
+                          +
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            saveCalibrationExplicit();
+                            setEditingLine(null);
+                            setIsCalibrating(false);
+                          }}
+                          className="ml-1 px-2.5 h-7 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white text-[11px] font-bold flex items-center gap-1"
+                          title="Uložit a zavřít"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
 
-                {/* 🟢 BOTTOM LINE: Start (Green Foot Dot) - Draggable when calibrating */}
+                {/* 🟢 BOTTOM LINE: Start (Green Foot Dot) - Hold ~0.3s to calibrate & drag */}
                 <div
                   data-calibration-line="true"
                   style={{ top: `${startZoneY}%` }}
+                  onContextMenu={(e) => {
+                    if (isAiCameraMode && showGuides && !isRunning) e.preventDefault();
+                  }}
                   onPointerDown={(e) => handleLinePointerDown('foot', e)}
                   onPointerMove={(e) => handleLinePointerMove('foot', e)}
                   onPointerUp={(e) => handleLinePointerUp('foot', e)}
                   onPointerCancel={(e) => handleLinePointerUp('foot', e)}
                   onClick={(e) => {
-                    if (isCalibrating) e.stopPropagation();
+                    if (editingLine === 'foot' || isCalibrating || justDraggedRef.current) {
+                      e.stopPropagation();
+                    } else if (editingLine) {
+                      e.stopPropagation();
+                      setEditingLine('foot');
+                    }
                   }}
                   className={`absolute left-2 right-2 -translate-y-1/2 py-4 flex items-center ${
-                    isCalibrating
-                      ? 'pointer-events-auto cursor-ns-resize touch-none'
+                    !isRunning
+                      ? editingLine === 'foot' || isCalibrating
+                        ? 'pointer-events-auto cursor-ns-resize touch-none z-20'
+                        : 'pointer-events-auto cursor-grab touch-pan-y'
                       : 'pointer-events-none'
                   }`}
                 >
                   <div
                     className={`w-full border-t-2 relative transition-shadow ${
-                      draggingLine === 'foot'
+                      draggingLine === 'foot' || editingLine === 'foot'
                         ? 'border-emerald-200 shadow-[0_0_20px_rgba(52,211,153,1)]'
                         : lastLineTrigger === 'start'
                         ? 'border-emerald-300 shadow-[0_0_16px_rgba(52,211,153,0.95)]'
@@ -4348,7 +4690,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                     <div className="flex items-center justify-between -translate-y-1/2 px-1">
                       <span
                         className={`px-2 py-0.5 rounded-full bg-emerald-950/90 border text-emerald-100 text-[10px] font-bold shadow-md flex items-center gap-1.5 transition-transform ${
-                          draggingLine === 'foot'
+                          draggingLine === 'foot' || editingLine === 'foot'
                             ? 'border-white scale-105 ring-2 ring-emerald-400'
                             : isCalibrating
                             ? 'border-emerald-400 ring-1 ring-emerald-400/50'
@@ -4357,12 +4699,60 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                       >
                         <span className="w-2 h-2 rounded-full bg-emerald-400" />
                         <span>START – Noha</span>
-                        {isCalibrating && <span className="text-emerald-300 font-black">↕</span>}
+                        {(isCalibrating || editingLine === 'foot') && (
+                          <span className="text-emerald-300 font-black">↕</span>
+                        )}
                       </span>
                       <span className="px-1.5 py-0.5 rounded bg-black/85 text-emerald-300 font-mono text-[9px] border border-emerald-500/50">
                         Y:{startZoneY}%
                       </span>
                     </div>
+
+                    {editingLine === 'foot' && !isRunning && (
+                      <div
+                        data-no-gesture="true"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onPointerMove={(e) => e.stopPropagation()}
+                        onPointerUp={(e) => e.stopPropagation()}
+                        onTouchStart={(e) => e.stopPropagation()}
+                        onClick={(e) => e.stopPropagation()}
+                        className={`absolute left-1/2 -translate-x-1/2 z-30 flex items-center gap-1 px-2 py-1 rounded-xl bg-slate-950/95 border border-emerald-400/70 shadow-2xl backdrop-blur-md whitespace-nowrap ${
+                          startZoneY < 24 ? 'top-full mt-2' : 'bottom-full mb-2'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => updateCalibration('startY', -1)}
+                          className="w-8 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 active:scale-95 text-white font-black text-sm flex items-center justify-center"
+                          title="Posunout výš (-1%)"
+                        >
+                          −
+                        </button>
+                        <span className="px-2 font-mono text-[11px] font-black text-emerald-200 min-w-[44px] text-center">
+                          {startZoneY}%
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => updateCalibration('startY', 1)}
+                          className="w-8 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 active:scale-95 text-white font-black text-sm flex items-center justify-center"
+                          title="Posunout níž (+1%)"
+                        >
+                          +
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            saveCalibrationExplicit();
+                            setEditingLine(null);
+                            setIsCalibrating(false);
+                          }}
+                          className="ml-1 px-2.5 h-7 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white text-[11px] font-bold flex items-center gap-1"
+                          title="Uložit a zavřít"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -4527,140 +4917,30 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
               </div>
             )}
 
-            {/* Compact Floating Calibration Dock directly on Camera Viewfinder (zero scrolling!) */}
-            {isAiCameraMode && isCalibrating && (
+            {/* Optional Slim Top Calibration Bar ONLY when toolbar Kalibrace is toggled without an active line */}
+            {isAiCameraMode && isCalibrating && !editingLine && !isRunning && (
               <div
                 data-no-gesture="true"
                 onClick={(e) => e.stopPropagation()}
-                className="absolute bottom-2.5 left-2.5 right-2.5 z-30 p-2 rounded-2xl bg-slate-950/90 border border-white/20 backdrop-blur-md space-y-1.5 shadow-2xl"
+                className="absolute top-2.5 left-2.5 right-2.5 z-30 px-2.5 py-1.5 rounded-xl bg-slate-950/90 border border-white/20 backdrop-blur-md flex flex-wrap items-center justify-between gap-2 shadow-xl text-[10px]"
               >
-                {/* Row 1: Select Line (Start, 5m/3.3m, 10m/6.6m, Cíl) + Micro-Nudge (-1% / +1%) */}
-                <div className="flex flex-wrap items-center justify-between gap-1.5">
-                  <div className="flex flex-wrap items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => setActiveCalibrationTool('foot')}
-                      className={`px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-all ${
-                        activeCalibrationTool === 'foot'
-                          ? 'bg-emerald-600 text-white ring-1 ring-emerald-300'
-                          : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                      }`}
-                    >
-                      <span className="w-2 h-2 rounded-full bg-emerald-300" />
-                      <span>Start {startZoneY}%</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setActiveCalibrationTool('split1')}
-                      className={`px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-all ${
-                        activeCalibrationTool === 'split1'
-                          ? 'bg-blue-600 text-white ring-1 ring-blue-300'
-                          : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                      }`}
-                    >
-                      <span className="w-2 h-2 rounded-full bg-blue-300" />
-                      <span>
-                        {isYouthCategory ? '3.3m' : '5m'} {split1ZoneY}%
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setActiveCalibrationTool('split2')}
-                      className={`px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-all ${
-                        activeCalibrationTool === 'split2'
-                          ? 'bg-violet-600 text-white ring-1 ring-violet-300'
-                          : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                      }`}
-                    >
-                      <span className="w-2 h-2 rounded-full bg-violet-300" />
-                      <span>
-                        {isYouthCategory ? '6.6m' : '10m'} {split2ZoneY}%
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setActiveCalibrationTool('hand')}
-                      className={`px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-all ${
-                        activeCalibrationTool === 'hand'
-                          ? 'bg-red-600 text-white ring-1 ring-red-300'
-                          : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                      }`}
-                    >
-                      <span className="w-2 h-2 rounded-full bg-red-300" />
-                      <span>Cíl {finishZoneY}%</span>
-                    </button>
-                  </div>
-
-                  {/* Fine ±1% Nudge for active line */}
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        updateCalibration(
-                          activeCalibrationTool === 'foot'
-                            ? 'startY'
-                            : activeCalibrationTool === 'hand'
-                            ? 'finishY'
-                            : activeCalibrationTool === 'split1'
-                            ? 'split1Y'
-                            : 'split2Y',
-                          -1
-                        )
-                      }
-                      className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-[10px] font-bold flex items-center gap-0.5"
-                      title="Posunout vybranou linii výše (-1%)"
-                    >
-                      <ChevronUp className="w-3 h-3" />
-                      <span>Výš</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        updateCalibration(
-                          activeCalibrationTool === 'foot'
-                            ? 'startY'
-                            : activeCalibrationTool === 'hand'
-                            ? 'finishY'
-                            : activeCalibrationTool === 'split1'
-                            ? 'split1Y'
-                            : 'split2Y',
-                          1
-                        )
-                      }
-                      className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-[10px] font-bold flex items-center gap-0.5"
-                      title="Posunout vybranou linii níže (+1%)"
-                    >
-                      <ChevronDown className="w-3 h-3" />
-                      <span>Níž</span>
-                    </button>
-                  </div>
-                </div>
-
-                {/* Row 2: Actions right inside camera (Wall Scan, Reset, Save & Close) */}
-                <div className="flex flex-wrap items-center justify-between gap-1.5 pt-1 border-t border-white/10 text-[10px]">
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={captureWallBackground}
-                      className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold flex items-center gap-1"
-                    >
-                      <Crosshair className="w-3 h-3 text-blue-400" />
-                      <span>Sken stěny</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={resetCategoryCalibration}
-                      className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold"
-                    >
-                      Výchozí
-                    </button>
-                  </div>
-
+                <span className="text-slate-200 font-bold">
+                  Táhněte nebo podržte libovolnou linii pro úpravu (±)
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={resetCategoryCalibration}
+                    className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold"
+                  >
+                    Výchozí
+                  </button>
                   <button
                     type="button"
                     onClick={() => {
                       saveCalibrationExplicit();
                       setIsCalibrating(false);
+                      setEditingLine(null);
                     }}
                     className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold flex items-center gap-1"
                   >
@@ -4858,10 +5138,10 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                   <Target className="w-4 h-4 text-emerald-500 shrink-0" />
                   <span>
                     {isAiCameraMode
-                      ? `🟢 Start Noha (${startZoneY}%) → 🔵 ${isYouthCategory ? '3.3m' : '5m'} (${split1ZoneY}%) → 🟣 ${
+                      ? `🟢 Start (${startZoneY}%) → 🔵 ${isYouthCategory ? '3.3m' : '5m'} (${split1ZoneY}%) → 🟣 ${
                           isYouthCategory ? '6.6m' : '10m'
-                        } (${split2ZoneY}%) → 🔴 Cíl (${finishZoneY}%)${
-                          ifscStartWithCamera ? ' · IFSC odpočet + hlídání ulitého startu ZAP' : ''
+                        } (${split2ZoneY}%) → 🔴 Cíl (${finishZoneY}%) · Podržením linie ji upravíte (±)${
+                          ifscStartWithCamera ? ' · IFSC ZAP' : ''
                         }`
                       : 'Kamera nahrává video výlezu. Klepnutím na displej spustíte nebo zastavíte časomíru.'}
                   </span>
