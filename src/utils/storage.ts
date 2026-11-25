@@ -120,7 +120,13 @@ export function saveRun(run: SpeedRun): SpeedRun[] {
 
   const updatedList = [updatedRun, ...currentRuns];
   if (typeof window !== 'undefined') {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedList));
+    const serializableList = updatedList.map((r) => {
+      if (!r.poseTimeline) return r;
+      const copy = { ...r };
+      delete copy.poseTimeline;
+      return copy;
+    });
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(serializableList));
     if (isPb) {
       updateProfilePB(run.totalTime, run.routeCategory);
     }

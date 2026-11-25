@@ -34,7 +34,9 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
-  ArrowDown
+  ArrowDown,
+  Lock,
+  Unlock
 } from 'lucide-react';
 import {
   playIFSCPrepTone,
@@ -45,7 +47,13 @@ import {
   speakIFSCCommand,
   getStoredAudioSettings,
 } from '../utils/audio';
-import { RouteCategory, SpeedRun } from '../types/climbing';
+import {
+  RouteCategory,
+  SpeedRun,
+  VideoTimingMeta,
+  VideoCalibrationLines,
+  RecordedPoseSample,
+} from '../types/climbing';
 import { saveRun, getUserProfile, updateRunVideo, removeRunVideo, deleteRun, UserProfile } from '../utils/storage';
 import { ROUTE_DEFINITIONS } from '../data/speedWallData';
 import { Language, TRANSLATIONS } from '../utils/i18n';
@@ -255,6 +263,9 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const [videoShareFeedback, setVideoShareFeedback] = useState<string | null>(null);
   const [showCloudPicker, setShowCloudPicker] = useState<boolean>(false);
   const [isExportingVideo, setIsExportingVideo] = useState<boolean>(false);
+  const [includePoseInVideo, setIncludePoseInVideo] = useState<boolean>(false);
+  const [isPostRollRecording, setIsPostRollRecording] = useState<boolean>(false);
+  const [postRollRemainingSec, setPostRollRemainingSec] = useState<number>(0);
   const [videoBoxRect, setVideoBoxRect] = useState<{ left: number; top: number; width: number; height: number }>({
     left: 0,
     top: 0,
@@ -262,8 +273,11 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     height: 100,
   });
 
-  // Real-time AI Climber Pose Tracking (Green = Foot, Blue = Torso, Red = Hands)
+  // Real-time AI Climber Pose Tracking (Green = Foot, Blue = Torso, Red = Hands) + Tap-to-Lock
   const [trackedPose, setTrackedPose] = useState<TrackedPose>(EMPTY_POSE);
+  const [secondaryPoses, setSecondaryPoses] = useState<TrackedPoint[]>([]);
+  const [lockedClimber, setLockedClimber] = useState<{ laneX: number; lastX: number; lastY: number } | null>(null);
+  const [isPickingClimber, setIsPickingClimber] = useState<boolean>(false);
   const [poseEngineState, setPoseEngineState] = useState<'idle' | 'loading' | 'mediapipe' | 'fallback'>('idle');
   const [wallBgReady, setWallBgReady] = useState<boolean>(false);
   const [lastLineTrigger, setLastLineTrigger] = useState<'start' | 'mid' | 'finish' | null>(null);
@@ -423,21 +437,70 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     setTimeout(() => setCalibrationSavedToast(null), 2000);
   };
 
-  // Viewfinder Click: in AI Kamera calibration mode, moves the selected horizontal line; otherwise starts/stops timer!
+  // Lock / Unlock specific climber by coordinates so passersby cannot steal tracking
+  const lockOntoPoint = useCallback((rawX: number, rawY: number) => {
+    const x = Math.max(4, Math.min(96, rawX));
+    const y = Math.max(4, Math.min(96, rawY));
+    const nextLock = { laneX: x, lastX: x, lastY: y };
+    lockedClimberRef.current = nextLock;
+    setLockedClimber(nextLock);
+    setIsPickingClimber(false);
+    prevFootYRef.current = null;
+    footArmedBelowLineRef.current = false;
+    setCalibrationSavedToast('🔒 Lezec zafixován — kolemjdoucí budou ignorováni');
+    setTimeout(() => setCalibrationSavedToast(null), 2500);
+  }, []);
+
+  const unlockClimber = useCallback(() => {
+    lockedClimberRef.current = null;
+    setLockedClimber(null);
+    setIsPickingClimber(false);
+    setCalibrationSavedToast('🔓 Fixace lezce zrušena');
+    setTimeout(() => setCalibrationSavedToast(null), 1800);
+  }, []);
+
+  // Viewfinder Click: handles climber tap-to-lock, AI Kamera line calibration, or starts/stops timer
   const handleViewfinderClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (justDraggedRef.current || draggingLine || justSwipedRef.current) return;
 
-    if (isAiCameraMode && isCalibrating) {
+    const getBoxPercentCoords = () => {
       const boxRect = lineDragBoxRef.current?.getBoundingClientRect();
-      let clickY: number;
-      if (boxRect && boxRect.height > 0) {
-        clickY = Math.round(((e.clientY - boxRect.top) / boxRect.height) * 100);
-      } else {
-        const rect = e.currentTarget.getBoundingClientRect();
-        const boxTopPx = rect.top + (videoBoxRect.top / 100) * rect.height;
-        const boxHeightPx = Math.max(1, (videoBoxRect.height / 100) * rect.height);
-        clickY = Math.round(((e.clientY - boxTopPx) / boxHeightPx) * 100);
+      if (boxRect && boxRect.width > 0 && boxRect.height > 0) {
+        return {
+          x: Math.max(1, Math.min(99, ((e.clientX - boxRect.left) / boxRect.width) * 100)),
+          y: Math.max(1, Math.min(99, ((e.clientY - boxRect.top) / boxRect.height) * 100)),
+        };
       }
+      const rect = e.currentTarget.getBoundingClientRect();
+      const boxLeftPx = rect.left + (videoBoxRect.left / 100) * rect.width;
+      const boxWidthPx = Math.max(1, (videoBoxRect.width / 100) * rect.width);
+      const boxTopPx = rect.top + (videoBoxRect.top / 100) * rect.height;
+      const boxHeightPx = Math.max(1, (videoBoxRect.height / 100) * rect.height);
+      return {
+        x: Math.max(1, Math.min(99, ((e.clientX - boxLeftPx) / boxWidthPx) * 100)),
+        y: Math.max(1, Math.min(99, ((e.clientY - boxTopPx) / boxHeightPx) * 100)),
+      };
+    };
+
+    if (isAiCameraMode && isPickingClimber) {
+      const pt = getBoxPercentCoords();
+      let targetX = pt.x;
+      let targetY = pt.y;
+      let bestDist = 26;
+      for (const cand of candidateBodiesRef.current) {
+        const d = Math.hypot(cand.x - pt.x, cand.y - pt.y);
+        if (d < bestDist) {
+          bestDist = d;
+          targetX = cand.x;
+          targetY = cand.y;
+        }
+      }
+      lockOntoPoint(targetX, targetY);
+      return;
+    }
+
+    if (isAiCameraMode && isCalibrating) {
+      const clickY = Math.round(getBoxPercentCoords().y);
 
       if (activeCalibrationTool === 'foot') {
         const clamped = Math.min(95, Math.max(55, clickY));
@@ -484,10 +547,39 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     return `${safeName}_${datePart}_${timePart}.${ext}`;
   };
 
-  // Burn live running timer (00.000s -> final result) permanently into the top-right corner of saved video
-  const getAnnotatedVideoBlob = async (run: SpeedRun): Promise<{ blob: Blob; ext: string; mimeType: string } | null> => {
+  // Helper: find nearest recorded AI pose sample to a video timestamp (for preview & export)
+  const findPoseSampleAtTime = useCallback(
+    (timeline: RecordedPoseSample[] | undefined, tSec: number): RecordedPoseSample | null => {
+      if (!timeline || timeline.length === 0) return null;
+      let lo = 0;
+      let hi = timeline.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (timeline[mid].tSec < tSec) lo = mid + 1;
+        else hi = mid;
+      }
+      let best = timeline[lo];
+      if (lo > 0 && Math.abs(timeline[lo - 1].tSec - tSec) < Math.abs(best.tSec - tSec)) {
+        best = timeline[lo - 1];
+      }
+      return Math.abs(best.tSec - tSec) <= 0.45 ? best : null;
+    },
+    []
+  );
+
+  // Burn live running timer + trimmed [start-3s .. finish+3s] + optional AI pose overlay into exported video
+  const getAnnotatedVideoBlob = async (
+    run: SpeedRun,
+    withPoseOverlay: boolean = includePoseInVideo
+  ): Promise<{ blob: Blob; ext: string; mimeType: string } | null> => {
     if (!run.videoUrl) return null;
-    const cacheKey = `${run.id}_top_right_running_${run.totalTime.toFixed(3)}`;
+    const savedMem = recordedPoseDataMapRef.current.get(run.id);
+    const timing = run.videoTiming || savedMem?.timing;
+    const calLines = run.videoCalibration || savedMem?.calibration;
+    const poseTimeline = run.poseTimeline || savedMem?.poseTimeline;
+    const hasPoseData = Boolean(withPoseOverlay && poseTimeline && poseTimeline.length > 0);
+
+    const cacheKey = `${run.id}_v3_${hasPoseData ? 'pose' : 'clean'}_${run.totalTime.toFixed(3)}`;
     if (exportedVideoCacheRef.current?.key === cacheKey) {
       return exportedVideoCacheRef.current.result;
     }
@@ -540,6 +632,25 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         offscreenVideo.load();
       });
 
+      // Seek to pre-roll start (3s before crossing green start line) if supported
+      const trimStartSec = timing ? Math.max(0, timing.preRollStartSec) : 0;
+      const trimEndSec = timing ? timing.postRollEndSec : Number.POSITIVE_INFINITY;
+      if (trimStartSec > 0.12) {
+        await new Promise<void>((resolve) => {
+          const seekWait = setTimeout(resolve, 650);
+          offscreenVideo.onseeked = () => {
+            clearTimeout(seekWait);
+            resolve();
+          };
+          try {
+            offscreenVideo.currentTime = trimStartSec;
+          } catch {
+            clearTimeout(seekWait);
+            resolve();
+          }
+        });
+      }
+
       const natW = offscreenVideo.videoWidth || 1280;
       const natH = offscreenVideo.videoHeight || 720;
       const scale = Math.min(1, 1280 / Math.max(natW, natH));
@@ -569,23 +680,135 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         if (ev.data && ev.data.size > 0) chunks.push(ev.data);
       };
 
+      const drawPoseDot = (
+        pxPct: number,
+        pyPct: number,
+        color: string,
+        labelText: string,
+        minDim: number
+      ) => {
+        const cx = (pxPct / 100) * W;
+        const cy = (pyPct / 100) * H;
+        const r = Math.max(5, Math.round(minDim * 0.011));
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(cx, cy, r + 2, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,255,255,0.92)';
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+
+        const fontSize = Math.max(10, Math.round(minDim * 0.02));
+        ctx.font = `800 ${fontSize}px system-ui, -apple-system, sans-serif`;
+        const tw = ctx.measureText(labelText).width;
+        const px = 6;
+        const py = 3;
+        const lx = Math.min(W - tw - px * 2 - 4, cx + r + 5);
+        const ly = Math.max(4, Math.min(H - fontSize - py * 2 - 4, cy - (fontSize + py * 2) / 2));
+
+        ctx.fillStyle = 'rgba(9, 13, 24, 0.82)';
+        ctx.beginPath();
+        if (typeof ctx.roundRect === 'function') {
+          ctx.roundRect(lx, ly, tw + px * 2, fontSize + py * 2, 5);
+        } else {
+          ctx.rect(lx, ly, tw + px * 2, fontSize + py * 2);
+        }
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.textBaseline = 'top';
+        ctx.fillText(labelText, lx + px, ly + py);
+        ctx.restore();
+      };
+
       const drawWatermarkFrame = (forceFinal = false) => {
         ctx.drawImage(offscreenVideo, 0, 0, W, H);
+        const minDim = Math.min(W, H);
+        const vidTime = offscreenVideo.currentTime || 0;
 
-        let currentRunSec = offscreenVideo.currentTime || 0;
-        const vidDur = offscreenVideo.duration;
-        if (forceFinal) {
-          currentRunSec = run.totalTime;
-        } else if (Number.isFinite(vidDur) && vidDur > 0.25 && vidDur < run.totalTime) {
-          currentRunSec = (currentRunSec / vidDur) * run.totalTime;
+        // Optional AI Pose Tracking Overlay (Hand, Body, Foot + Skeleton + Trigger Lines)
+        if (hasPoseData) {
+          if (calLines) {
+            const lines: { yPct: number; color: string }[] = [
+              { yPct: calLines.finishY, color: 'rgba(239, 68, 68, 0.55)' },
+              { yPct: calLines.midY, color: 'rgba(59, 130, 246, 0.5)' },
+              { yPct: calLines.startY, color: 'rgba(16, 185, 129, 0.55)' },
+            ];
+            ctx.save();
+            ctx.setLineDash([8, 6]);
+            ctx.lineWidth = Math.max(1.5, minDim * 0.003);
+            for (const ln of lines) {
+              const ly = (ln.yPct / 100) * H;
+              ctx.strokeStyle = ln.color;
+              ctx.beginPath();
+              ctx.moveTo(W * 0.04, ly);
+              ctx.lineTo(W * 0.96, ly);
+              ctx.stroke();
+            }
+            ctx.restore();
+          }
+
+          const sample = findPoseSampleAtTime(poseTimeline, vidTime);
+          if (sample) {
+            if (sample.skeleton && sample.skeleton.length > 0) {
+              ctx.save();
+              ctx.strokeStyle = 'rgba(255, 255, 255, 0.78)';
+              ctx.lineWidth = Math.max(2, minDim * 0.0045);
+              ctx.lineCap = 'round';
+              for (const seg of sample.skeleton) {
+                ctx.beginPath();
+                ctx.moveTo((seg.from.x / 100) * W, (seg.from.y / 100) * H);
+                ctx.lineTo((seg.to.x / 100) * W, (seg.to.y / 100) * H);
+                ctx.stroke();
+              }
+              ctx.restore();
+            }
+            drawPoseDot(sample.hands.x, sample.hands.y, '#ef4444', 'Ruka', minDim);
+            drawPoseDot(sample.body.x, sample.body.y, '#3b82f6', 'Tělo', minDim);
+            drawPoseDot(sample.foot.x, sample.foot.y, '#10b981', 'Noha', minDim);
+          }
         }
+
+        // Compute aligned chrono readout (00.000s during pre-roll, live climb, locked finish during post-roll)
+        let currentRunSec = vidTime;
+        let isPreStart = false;
+        let isFinishedFrame = forceFinal;
+
+        if (timing) {
+          if (forceFinal || vidTime >= timing.climbEndSec) {
+            currentRunSec = run.totalTime;
+            isFinishedFrame = true;
+          } else if (vidTime < timing.climbStartSec) {
+            currentRunSec = 0;
+            isPreStart = true;
+            isFinishedFrame = false;
+          } else {
+            const climbSpan = Math.max(0.05, timing.climbEndSec - timing.climbStartSec);
+            currentRunSec = ((vidTime - timing.climbStartSec) / climbSpan) * run.totalTime;
+            isFinishedFrame = currentRunSec >= run.totalTime - 0.012;
+          }
+        } else {
+          const vidDur = offscreenVideo.duration;
+          if (forceFinal) {
+            currentRunSec = run.totalTime;
+          } else if (Number.isFinite(vidDur) && vidDur > 0.25 && vidDur < run.totalTime) {
+            currentRunSec = (currentRunSec / vidDur) * run.totalTime;
+          }
+          isFinishedFrame = forceFinal || currentRunSec >= run.totalTime - 0.012;
+        }
+
         const displaySec = Math.min(run.totalTime, Math.max(0, currentRunSec));
-        const isFinishedFrame = forceFinal || displaySec >= run.totalTime - 0.012;
         const timeText = isFinishedFrame ? maxTimeReference : formatVideoTime(displaySec);
-        const topLabel = isFinishedFrame ? `${baseClimberLabel} · CÍL` : baseClimberLabel;
+        const topLabel = isFinishedFrame
+          ? `${baseClimberLabel} · CÍL`
+          : isPreStart
+          ? `${baseClimberLabel} · START`
+          : baseClimberLabel;
 
         // Top-right live chrono badge
-        const minDim = Math.min(W, H);
         const padX = Math.round(W * 0.03);
         const padY = Math.round(H * 0.035);
         const timeFontSize = Math.max(22, Math.round(minDim * 0.068));
@@ -594,7 +817,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         ctx.font = `900 ${timeFontSize}px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace`;
         const timeMetrics = ctx.measureText(maxTimeReference);
         ctx.font = `700 ${subFontSize}px system-ui, -apple-system, sans-serif`;
-        const subMetrics = ctx.measureText(`${baseClimberLabel} · CÍL`);
+        const subMetrics = ctx.measureText(`${baseClimberLabel} · START`);
 
         const innerPadX = Math.round(minDim * 0.026);
         const innerPadY = Math.round(minDim * 0.018);
@@ -607,7 +830,11 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
         ctx.save();
         ctx.fillStyle = 'rgba(9, 13, 24, 0.84)';
-        ctx.strokeStyle = isFinishedFrame ? 'rgba(16, 185, 129, 0.55)' : 'rgba(255, 255, 255, 0.22)';
+        ctx.strokeStyle = isFinishedFrame
+          ? 'rgba(16, 185, 129, 0.55)'
+          : isPreStart
+          ? 'rgba(245, 158, 11, 0.55)'
+          : 'rgba(255, 255, 255, 0.22)';
         ctx.lineWidth = Math.max(1, Math.round(minDim * 0.0025));
         ctx.beginPath();
         if (typeof ctx.roundRect === 'function') {
@@ -618,13 +845,16 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         ctx.fill();
         ctx.stroke();
 
-        // Accent strip: Red while climbing, Emerald once finish time locked
-        ctx.fillStyle = isFinishedFrame ? '#10b981' : '#ef4444';
+        ctx.fillStyle = isFinishedFrame ? '#10b981' : isPreStart ? '#f59e0b' : '#ef4444';
         ctx.fillRect(boxX + innerPadX * 0.5, boxY + innerPadY, accentW, boxH - innerPadY * 2);
 
         const textStartX = boxX + innerPadX * 0.5 + accentW + Math.round(innerPadX * 0.65);
 
-        ctx.fillStyle = isFinishedFrame ? 'rgba(167, 243, 208, 0.98)' : 'rgba(203, 213, 225, 0.95)';
+        ctx.fillStyle = isFinishedFrame
+          ? 'rgba(167, 243, 208, 0.98)'
+          : isPreStart
+          ? 'rgba(253, 230, 138, 0.98)'
+          : 'rgba(203, 213, 225, 0.95)';
         ctx.font = `700 ${subFontSize}px system-ui, -apple-system, sans-serif`;
         ctx.textBaseline = 'top';
         ctx.fillText(topLabel, textStartX, boxY + innerPadY);
@@ -638,21 +868,29 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       const exportedBlob = await new Promise<Blob>((resolve, reject) => {
         let exportRafId = 0;
         let stopped = false;
+        let recordingStarted = false;
 
         const finishExport = () => {
           if (stopped) return;
           stopped = true;
           cancelAnimationFrame(exportRafId);
+          try {
+            offscreenVideo.pause();
+          } catch {
+            // ignore
+          }
           if (recorder.state === 'recording') {
             try {
               recorder.stop();
             } catch {
               reject(new Error('recorder stop failed'));
             }
+          } else {
+            reject(new Error('recorder not started'));
           }
         };
 
-        const safetyTimer = setTimeout(finishExport, 35000);
+        const safetyTimer = setTimeout(finishExport, 45000);
 
         recorder.onstop = () => {
           clearTimeout(safetyTimer);
@@ -673,20 +911,46 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
         const renderLoop = () => {
           if (stopped) return;
+          const tNow = offscreenVideo.currentTime || 0;
+          if (!recordingStarted && tNow >= Math.max(0, trimStartSec - 0.08)) {
+            recordingStarted = true;
+            try {
+              recorder.start(100);
+            } catch {
+              // ignore
+            }
+          }
+
           drawWatermarkFrame(false);
+
+          if (tNow >= trimEndSec) {
+            drawWatermarkFrame(true);
+            setTimeout(finishExport, 220);
+            return;
+          }
           if (!offscreenVideo.ended && !offscreenVideo.paused) {
             exportRafId = requestAnimationFrame(renderLoop);
           }
         };
 
         offscreenVideo.onended = () => {
+          if (!recordingStarted) {
+            recordingStarted = true;
+            try {
+              recorder.start(100);
+            } catch {
+              // ignore
+            }
+          }
           drawWatermarkFrame(true);
           setTimeout(finishExport, 260);
         };
 
-        offscreenVideo.currentTime = 0;
         drawWatermarkFrame(false);
-        recorder.start(100);
+        if (offscreenVideo.currentTime >= Math.max(0, trimStartSec - 0.08)) {
+          recordingStarted = true;
+          recorder.start(100);
+        }
         offscreenVideo
           .play()
           .then(() => {
@@ -710,23 +974,37 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     }
   };
 
-  // Video saving handlers (Device download vs Cloud sharing) with burned-in top-right running timer
-  const handleDownloadVideoDirect = async () => {
-    if (!finishedRun?.videoUrl || isExportingVideo) return;
+  // Wait if the 3s post-roll capture is still finishing before saving/exporting
+  const waitForPostRollIfNeeded = async () => {
+    if (postRollPromiseRef.current) {
+      setVideoShareFeedback('Dokončuji 3s záznamu po dohmatu...');
+      await postRollPromiseRef.current;
+    }
+  };
+
+  // Video saving handlers (Device download vs Cloud sharing) with burned-in top-right running timer + optional AI dots
+  const handleDownloadVideoDirect = async (runOverride?: SpeedRun) => {
+    await waitForPostRollIfNeeded();
+    const targetRun = runOverride || finishedRunRef.current;
+    if (!targetRun?.videoUrl || isExportingVideo) return;
     setIsExportingVideo(true);
-    setVideoShareFeedback('Vypisuji běžící časomíru do pravého horního rohu videa...');
+    setVideoShareFeedback(
+      includePoseInVideo
+        ? 'Vypisuji časomíru a AI sledování (ruka/tělo/noha) do videa...'
+        : 'Vypisuji běžící časomíru do pravého horního rohu videa...'
+    );
     try {
-      const exported = await getAnnotatedVideoBlob(finishedRun);
+      const exported = await getAnnotatedVideoBlob(targetRun, includePoseInVideo);
       if (!exported) return;
       const downloadUrl = URL.createObjectURL(exported.blob);
       const link = document.createElement('a');
       link.href = downloadUrl;
-      link.download = buildVideoFilename(finishedRun, exported.ext);
+      link.download = buildVideoFilename(targetRun, exported.ext);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       setTimeout(() => URL.revokeObjectURL(downloadUrl), 4000);
-      setVideoShareFeedback(`Video ${buildVideoFilename(finishedRun, exported.ext)} bylo staženo!`);
+      setVideoShareFeedback(`Video ${buildVideoFilename(targetRun, exported.ext)} bylo staženo!`);
       setTimeout(() => setVideoShareFeedback(null), 4000);
     } finally {
       setIsExportingVideo(false);
@@ -734,20 +1012,22 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   };
 
   const handleShareVideoToCloud = async () => {
-    if (!finishedRun?.videoUrl || isExportingVideo) return;
+    await waitForPostRollIfNeeded();
+    const targetRun = finishedRunRef.current;
+    if (!targetRun?.videoUrl || isExportingVideo) return;
     setIsExportingVideo(true);
     setVideoShareFeedback('Připravuji video s běžícím časem pro uložení...');
     try {
-      const exported = await getAnnotatedVideoBlob(finishedRun);
+      const exported = await getAnnotatedVideoBlob(targetRun, includePoseInVideo);
       if (exported) {
-        const filename = buildVideoFilename(finishedRun, exported.ext);
+        const filename = buildVideoFilename(targetRun, exported.ext);
         const file = new File([exported.blob], filename, { type: exported.mimeType });
 
         if (typeof navigator !== 'undefined' && navigator.canShare && navigator.canShare({ files: [file] })) {
           await navigator.share({
             files: [file],
-            title: `Fifteen Speed Climbing - ${finishedRun.totalTime.toFixed(3)}s`,
-            text: `Můj výlez v čase ${finishedRun.totalTime.toFixed(3)}s na trase ${categoryName}`,
+            title: `Fifteen Speed Climbing - ${targetRun.totalTime.toFixed(3)}s`,
+            text: `Můj výlez v čase ${targetRun.totalTime.toFixed(3)}s na trase ${categoryName}`,
           });
           setVideoShareFeedback('Odesláno přes systémové sdílení!');
           setTimeout(() => setVideoShareFeedback(null), 3500);
@@ -893,6 +1173,8 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const bgFrameRef = useRef<Uint8ClampedArray | null>(null);
   const motionHeatmapRef = useRef<Float32Array | null>(null);
   const trackedPoseRef = useRef<TrackedPose>(EMPTY_POSE);
+  const lockedClimberRef = useRef<{ laneX: number; lastX: number; lastY: number } | null>(null);
+  const candidateBodiesRef = useRef<TrackedPoint[]>([]);
   const prevFootYRef = useRef<number | null>(null);
   const prevHandsYRef = useRef<number | null>(null);
   const footArmedBelowLineRef = useRef<boolean>(false);
@@ -902,58 +1184,309 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
 
-  // MediaRecorder refs
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const recordedChunksRef = useRef<Blob[]>([]);
+  // Rolling Pre-Roll + +3s Post-Roll MediaRecorder System + Timestamped Pose History
+  type RecorderSlot = {
+    recorder: MediaRecorder;
+    chunks: Blob[];
+    startTs: number;
+    mimeType: string;
+    discarded: boolean;
+  };
+  type TimedPoseSample = Omit<RecordedPoseSample, 'tSec'> & { absTs: number };
 
-  // Start MediaRecorder
-  const startMediaRecording = useCallback(() => {
-    if (!mediaStreamRef.current || !recordVideoOnRun) return;
+  const primaryRecSlotRef = useRef<RecorderSlot | null>(null);
+  const standbyRecSlotRef = useRef<RecorderSlot | null>(null);
+  const activeRunRecRef = useRef<{ slot: RecorderSlot; climbStartTs: number } | null>(null);
+  const postRollTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const postRollCountdownTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const postRollActiveRef = useRef<boolean>(false);
+  const postRollPromiseRef = useRef<Promise<void> | null>(null);
+  const finalizePostRollNowRef = useRef<(() => void) | null>(null);
+  const poseHistoryBufferRef = useRef<TimedPoseSample[]>([]);
+  const recordedPoseDataMapRef = useRef<
+    Map<string, { timing: VideoTimingMeta; calibration: VideoCalibrationLines; poseTimeline: RecordedPoseSample[] }>
+  >(new Map());
+  const finishedRunRef = useRef<SpeedRun | null>(null);
+  finishedRunRef.current = finishedRun;
+
+  const pickRecorderMime = () => {
+    const mimeTypes = [
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm',
+      'video/mp4;codecs=avc1',
+      'video/mp4',
+    ];
+    return (
+      mimeTypes.find((type) => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(type)) || ''
+    );
+  };
+
+  const createRecorderSlot = useCallback((stream: MediaStream): RecorderSlot | null => {
+    if (typeof MediaRecorder === 'undefined') return null;
     try {
-      recordedChunksRef.current = [];
-      const mimeTypes = [
-        'video/webm;codecs=vp9',
-        'video/webm',
-        'video/mp4;codecs=avc1',
-        'video/mp4',
-      ];
-      const mimeType = mimeTypes.find((type) => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(type)) || '';
-
-      const recorder = mimeType ? new MediaRecorder(mediaStreamRef.current, { mimeType }) : new MediaRecorder(mediaStreamRef.current);
+      const mimeType = pickRecorderMime();
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      const slot: RecorderSlot = {
+        recorder,
+        chunks: [],
+        startTs: performance.now(),
+        mimeType: recorder.mimeType || mimeType || 'video/webm',
+        discarded: false,
+      };
       recorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) {
-          recordedChunksRef.current.push(e.data);
+        if (!slot.discarded && e.data && e.data.size > 0) {
+          slot.chunks.push(e.data);
         }
       };
-      recorder.onstop = () => {
-        const blob = new Blob(recordedChunksRef.current, { type: recorder.mimeType || 'video/webm' });
-        const videoUrl = URL.createObjectURL(blob);
-        setRecordedVideoUrl(videoUrl);
-        setFinishedRun((prev) => {
-          if (!prev) return null;
-          updateRunVideo(prev.id, videoUrl);
-          return { ...prev, videoUrl };
-        });
-      };
-      recorder.start(100);
-      mediaRecorderRef.current = recorder;
-      setIsRecording(true);
+      recorder.start(200);
+      return slot;
     } catch {
-      setIsRecording(false);
+      return null;
     }
-  }, [recordVideoOnRun]);
+  }, []);
 
-  // Stop MediaRecorder
-  const stopMediaRecording = useCallback(() => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+  const discardRecorderSlot = useCallback((slot: RecorderSlot | null) => {
+    if (!slot) return;
+    slot.discarded = true;
+    slot.chunks = [];
+    if (slot.recorder.state === 'recording') {
       try {
-        mediaRecorderRef.current.stop();
+        slot.recorder.stop();
       } catch {
         // ignore
       }
     }
-    setIsRecording(false);
   }, []);
+
+  const cancelPendingPostRoll = useCallback(() => {
+    if (postRollTimerRef.current) {
+      clearTimeout(postRollTimerRef.current);
+      postRollTimerRef.current = null;
+    }
+    if (postRollCountdownTimerRef.current) {
+      clearInterval(postRollCountdownTimerRef.current);
+      postRollCountdownTimerRef.current = null;
+    }
+    finalizePostRollNowRef.current = null;
+    postRollActiveRef.current = false;
+    postRollPromiseRef.current = null;
+    setIsPostRollRecording(false);
+    setPostRollRemainingSec(0);
+    if (activeRunRecRef.current) {
+      discardRecorderSlot(activeRunRecRef.current.slot);
+      activeRunRecRef.current = null;
+    }
+    setIsRecording(false);
+  }, [discardRecorderSlot]);
+
+  // Background Rolling Pre-Roll Buffer: always keeps 3.2s - 6.7s of video BEFORE start line is crossed!
+  useEffect(() => {
+    if (!cameraActive || !recordVideoOnRun) {
+      cancelPendingPostRoll();
+      discardRecorderSlot(primaryRecSlotRef.current);
+      discardRecorderSlot(standbyRecSlotRef.current);
+      primaryRecSlotRef.current = null;
+      standbyRecSlotRef.current = null;
+      return;
+    }
+
+    const maintainPreRoll = () => {
+      const stream = mediaStreamRef.current;
+      if (!stream || sensorStateRef.current.isRunning || postRollActiveRef.current) return;
+
+      const now = performance.now();
+      if (!primaryRecSlotRef.current) {
+        primaryRecSlotRef.current = createRecorderSlot(stream);
+        return;
+      }
+
+      const primaryAge = now - primaryRecSlotRef.current.startTs;
+      if (primaryAge >= 3500 && !standbyRecSlotRef.current) {
+        standbyRecSlotRef.current = createRecorderSlot(stream);
+      }
+
+      if (standbyRecSlotRef.current && now - standbyRecSlotRef.current.startTs >= 3200) {
+        discardRecorderSlot(primaryRecSlotRef.current);
+        primaryRecSlotRef.current = standbyRecSlotRef.current;
+        standbyRecSlotRef.current = null;
+      }
+    };
+
+    maintainPreRoll();
+    const rollTimer = setInterval(maintainPreRoll, 450);
+    return () => {
+      clearInterval(rollTimer);
+      cancelPendingPostRoll();
+      discardRecorderSlot(primaryRecSlotRef.current);
+      discardRecorderSlot(standbyRecSlotRef.current);
+      primaryRecSlotRef.current = null;
+      standbyRecSlotRef.current = null;
+    };
+  }, [cameraActive, recordVideoOnRun, createRecorderSlot, discardRecorderSlot, cancelPendingPostRoll]);
+
+  // Lock active pre-roll slot onto the current run when timer starts
+  const startMediaRecording = useCallback(
+    (climbStartTs: number) => {
+      if (!mediaStreamRef.current || !recordVideoOnRun) return;
+      cancelPendingPostRoll();
+      if (standbyRecSlotRef.current) {
+        discardRecorderSlot(standbyRecSlotRef.current);
+        standbyRecSlotRef.current = null;
+      }
+      if (!primaryRecSlotRef.current) {
+        primaryRecSlotRef.current = createRecorderSlot(mediaStreamRef.current);
+      }
+      if (primaryRecSlotRef.current) {
+        activeRunRecRef.current = {
+          slot: primaryRecSlotRef.current,
+          climbStartTs,
+        };
+        setIsRecording(true);
+      }
+    },
+    [recordVideoOnRun, cancelPendingPostRoll, discardRecorderSlot, createRecorderSlot]
+  );
+
+  // Continue recording for +3.0 seconds AFTER crossing finish line, then attach trimmed clip & pose timeline
+  const schedulePostRollStop = useCallback(
+    (runId: string, stopTs: number, calSnapshot: VideoCalibrationLines) => {
+      const capture = activeRunRecRef.current;
+      if (!capture) {
+        setIsRecording(false);
+        return;
+      }
+
+      activeRunRecRef.current = null;
+      if (primaryRecSlotRef.current === capture.slot) {
+        primaryRecSlotRef.current = null;
+      }
+
+      const recStartTs = capture.slot.startTs;
+      const climbStartSec = Math.max(0, (capture.climbStartTs - recStartTs) / 1000);
+      const climbEndSec = Math.max(climbStartSec + 0.05, (stopTs - recStartTs) / 1000);
+      const timing: VideoTimingMeta = {
+        preRollStartSec: Math.max(0, climbStartSec - 3.0),
+        climbStartSec,
+        climbEndSec,
+        postRollEndSec: climbEndSec + 3.0,
+      };
+
+      postRollActiveRef.current = true;
+      setIsPostRollRecording(true);
+      setPostRollRemainingSec(3);
+
+      let finalized = false;
+      postRollPromiseRef.current = new Promise<void>((resolvePostRoll) => {
+        const finalizeNow = () => {
+          if (finalized) return;
+          finalized = true;
+          if (postRollTimerRef.current) {
+            clearTimeout(postRollTimerRef.current);
+            postRollTimerRef.current = null;
+          }
+          if (postRollCountdownTimerRef.current) {
+            clearInterval(postRollCountdownTimerRef.current);
+            postRollCountdownTimerRef.current = null;
+          }
+          finalizePostRollNowRef.current = null;
+
+          const finishWallTs = performance.now();
+          const finalEndSec = Math.max(timing.climbEndSec + 0.2, (finishWallTs - recStartTs) / 1000);
+          const resolvedTiming: VideoTimingMeta = {
+            ...timing,
+            postRollEndSec: Math.min(timing.postRollEndSec, finalEndSec),
+          };
+
+          const minAbs = recStartTs + (resolvedTiming.preRollStartSec - 0.15) * 1000;
+          const maxAbs = recStartTs + (resolvedTiming.postRollEndSec + 0.25) * 1000;
+          const poseTimeline: RecordedPoseSample[] = poseHistoryBufferRef.current
+            .filter((s) => s.absTs >= minAbs && s.absTs <= maxAbs)
+            .map((s) => ({
+              tSec: Number(((s.absTs - recStartTs) / 1000).toFixed(3)),
+              hands: s.hands,
+              body: s.body,
+              foot: s.foot,
+              skeleton: s.skeleton,
+            }));
+
+          const slot = capture.slot;
+          slot.recorder.onstop = () => {
+            postRollActiveRef.current = false;
+            postRollPromiseRef.current = null;
+            setIsPostRollRecording(false);
+            setPostRollRemainingSec(0);
+            setIsRecording(false);
+
+            if (slot.discarded) {
+              resolvePostRoll();
+              return;
+            }
+
+            const blob = new Blob(slot.chunks, { type: slot.mimeType || 'video/webm' });
+            const videoUrl = URL.createObjectURL(blob);
+            recordedPoseDataMapRef.current.set(runId, {
+              timing: resolvedTiming,
+              calibration: calSnapshot,
+              poseTimeline,
+            });
+            setRecordedVideoUrl(videoUrl);
+            setFinishedRun((prev) => {
+              if (!prev || prev.id !== runId) return prev;
+              updateRunVideo(prev.id, videoUrl);
+              return {
+                ...prev,
+                videoUrl,
+                videoTiming: resolvedTiming,
+                videoCalibration: calSnapshot,
+                poseTimeline,
+              };
+            });
+
+            // Immediately spin up next rolling pre-roll recorder for next attempt
+            if (mediaStreamRef.current && !primaryRecSlotRef.current) {
+              primaryRecSlotRef.current = createRecorderSlot(mediaStreamRef.current);
+            }
+            resolvePostRoll();
+          };
+
+          if (slot.recorder.state === 'recording') {
+            try {
+              slot.recorder.stop();
+            } catch {
+              postRollActiveRef.current = false;
+              postRollPromiseRef.current = null;
+              setIsPostRollRecording(false);
+              setIsRecording(false);
+              resolvePostRoll();
+            }
+          } else {
+            postRollActiveRef.current = false;
+            postRollPromiseRef.current = null;
+            setIsPostRollRecording(false);
+            setIsRecording(false);
+            resolvePostRoll();
+          }
+        };
+
+        finalizePostRollNowRef.current = finalizeNow;
+
+        let secsLeft = 3;
+        postRollCountdownTimerRef.current = setInterval(() => {
+          secsLeft = Math.max(1, secsLeft - 1);
+          setPostRollRemainingSec(secsLeft);
+        }, 980);
+
+        postRollTimerRef.current = setTimeout(finalizeNow, 3000);
+      });
+    },
+    [createRecorderSlot]
+  );
+
+  // Stop MediaRecorder cleanly (discarding if reset)
+  const stopMediaRecording = useCallback(() => {
+    cancelPendingPostRoll();
+  }, [cancelPendingPostRoll]);
 
   // RAF Timer loop
   const updateTimer = useCallback(() => {
@@ -982,15 +1515,13 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   // Stop Timer
   const stopTimer = useCallback(() => {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    const finalMs = startTimeRef.current > 0 ? performance.now() - startTimeRef.current : elapsedMs;
+    const stopTs = performance.now();
+    const finalMs = startTimeRef.current > 0 ? stopTs - startTimeRef.current : elapsedMs;
     startTimeRef.current = 0;
     setElapsedMs(finalMs);
     setIsRunning(false);
     setCountdownState('idle');
     playFinishFanfare();
-
-    // Stop video recording
-    stopMediaRecording();
 
     const totalSeconds = parseFloat((finalMs / 1000).toFixed(3));
     let s1 = split1TimeRef.current ?? split1Time;
@@ -1036,6 +1567,13 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     setFinishedRun(persistedRun);
     onRunFinished(persistedRun);
 
+    // Record +3 seconds after crossing red top finish line before finalizing clip
+    schedulePostRollStop(persistedRun.id, stopTs, {
+      startY: startZoneY,
+      midY: midZoneY,
+      finishY: finishZoneY,
+    });
+
     if (persistedRun.isPersonalBest && !isFalseStart) {
       try {
         confetti({
@@ -1061,7 +1599,10 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     profile,
     lang,
     onRunFinished,
-    stopMediaRecording,
+    schedulePostRollStop,
+    startZoneY,
+    midZoneY,
+    finishZoneY,
   ]);
 
   // Start Timer Execution
@@ -1074,6 +1615,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       setIsFalseStart(false);
     }
 
+    const startTs = performance.now();
     setReactionTime(measuredReaction);
     setElapsedMs(0);
     setSplit1Time(null);
@@ -1091,10 +1633,10 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     setIsRunning(true);
     setCountdownState('started');
 
-    // Start video recording if camera stream is active
-    startMediaRecording();
+    // Lock active pre-roll video recording onto this run
+    startMediaRecording(startTs);
 
-    startTimeRef.current = performance.now();
+    startTimeRef.current = startTs;
     rafRef.current = requestAnimationFrame(updateTimer);
   }, [updateTimer, startMediaRecording]);
 
@@ -1186,8 +1728,8 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       // ignore
     }
     removeRunVideo(finishedRun.id);
+    recordedPoseDataMapRef.current.delete(finishedRun.id);
     setRecordedVideoUrl(null);
-    recordedChunksRef.current = [];
     setFinishedRun((prev) => (prev ? { ...prev, videoUrl: undefined } : null));
     setShowDeleteVideoConfirm(false);
   }, [finishedRun]);
@@ -1288,7 +1830,12 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     manualWallScanRef.current = false;
     cameraStartTsRef.current = performance.now();
     trackedPoseRef.current = EMPTY_POSE;
+    lockedClimberRef.current = null;
+    candidateBodiesRef.current = [];
     setTrackedPose(EMPTY_POSE);
+    setSecondaryPoses([]);
+    setLockedClimber(null);
+    setIsPickingClimber(false);
     setWallBgReady(false);
   }, []);
 
@@ -1758,7 +2305,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                 delegate: candidate.delegate,
               },
               runningMode: 'VIDEO',
-              numPoses: 1,
+              numPoses: 4,
               minPoseDetectionConfidence: minConf,
               minPosePresenceConfidence: minConf,
               minTrackingConfidence: minConf,
@@ -1863,7 +2410,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       }
     };
 
-    const extractFromLandmarks = (lms: NormalizedLandmark[]): TrackedPose | null => {
+    const extractRawFromLandmarks = (lms: NormalizedLandmark[]): TrackedPose | null => {
       if (!lms || lms.length < 25) return null;
 
       const isVisible = (idx: number, minVis = 0.14) => {
@@ -1873,7 +2420,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
       const clampPct = (v: number) => Math.max(1, Math.min(99, v * 100));
 
-      // 1) Hands (Ruka): pick highest visible reaching hand (wrists 15/16, pinkies 17/18, index 19/20, fallback elbows 13/14)
+      // 1) Hands (Ruka): pick highest visible reaching hand
       const handIndices = [19, 20, 17, 18, 15, 16];
       let bestHand: NormalizedLandmark | null = null;
       for (const idx of handIndices) {
@@ -1904,7 +2451,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         }
       }
 
-      // 3) Foot (Noha): pick lowest/trailing visible foot point (toes 31/32, heels 29/30, ankles 27/28, fallback knees 25/26)
+      // 3) Foot (Noha): pick lowest/trailing visible foot point
       const footIndices = [31, 32, 29, 30, 27, 28];
       let bestFoot: NormalizedLandmark | null = null;
       for (const idx of footIndices) {
@@ -1931,11 +2478,6 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       const rawFootX = bestFoot ? clampPct(bestFoot.x) : rawBodyX;
       const rawFootY = bestFoot ? clampPct(bestFoot.y) : Math.min(98, rawBodyY + 18);
 
-      const prev = trackedPoseRef.current;
-      const usePrev = prev.active && prev.source === 'mediapipe';
-      const alpha = usePrev ? 0.72 : 1.0;
-      const lerp = (a: number, b: number) => a + (b - a) * alpha;
-
       const skeleton: SkeletonSegment[] = [];
       for (const [aIdx, bIdx] of POSE_BONE_PAIRS) {
         if (isVisible(aIdx, 0.18) && isVisible(bIdx, 0.18)) {
@@ -1951,21 +2493,29 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
       return {
         active: true,
-        hands: {
-          x: usePrev ? lerp(prev.hands.x, rawHandsX) : rawHandsX,
-          y: usePrev ? lerp(prev.hands.y, rawHandsY) : rawHandsY,
-        },
-        body: {
-          x: usePrev ? lerp(prev.body.x, rawBodyX) : rawBodyX,
-          y: usePrev ? lerp(prev.body.y, rawBodyY) : rawBodyY,
-        },
-        foot: {
-          x: usePrev ? lerp(prev.foot.x, rawFootX) : rawFootX,
-          y: usePrev ? lerp(prev.foot.y, rawFootY) : rawFootY,
-        },
+        hands: { x: rawHandsX, y: rawHandsY },
+        body: { x: rawBodyX, y: rawBodyY },
+        foot: { x: rawFootX, y: rawFootY },
         confidence: Math.min(100, Math.round(avgVis * 100)),
         source: 'mediapipe',
         skeleton,
+      };
+    };
+
+    const smoothPose = (rawPose: TrackedPose): TrackedPose => {
+      const prev = trackedPoseRef.current;
+      const isContinuous =
+        prev.active &&
+        prev.source === 'mediapipe' &&
+        Math.hypot(prev.body.x - rawPose.body.x, prev.body.y - rawPose.body.y) < 28;
+      if (!isContinuous) return rawPose;
+      const alpha = 0.72;
+      const lerp = (a: number, b: number) => a + (b - a) * alpha;
+      return {
+        ...rawPose,
+        hands: { x: lerp(prev.hands.x, rawPose.hands.x), y: lerp(prev.hands.y, rawPose.hands.y) },
+        body: { x: lerp(prev.body.x, rawPose.body.x), y: lerp(prev.body.y, rawPose.body.y) },
+        foot: { x: lerp(prev.foot.x, rawPose.foot.x), y: lerp(prev.foot.y, rawPose.foot.y) },
       };
     };
 
@@ -1981,7 +2531,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
       const nowMs = performance.now();
 
-      // Primary Engine: Google MediaPipe PoseLandmarker (33 anatomical landmarks)
+      // Primary Engine: Google MediaPipe PoseLandmarker (multi-pose + locked lane support)
       const landmarker = poseLandmarkerRef.current;
       if (landmarker) {
         try {
@@ -1989,21 +2539,111 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
           lastMediaPipeTsRef.current = monotonicTs;
           const result = landmarker.detectForVideo(video, monotonicTs);
           if (result.landmarks && result.landmarks.length > 0) {
-            const pose = extractFromLandmarks(result.landmarks[0]);
-            if (pose) {
-              const prevFootY = prevFootYRef.current;
-              trackedPoseRef.current = pose;
-              prevFootYRef.current = pose.foot.y;
-              prevHandsYRef.current = pose.hands.y;
+            const rawPoses: TrackedPose[] = [];
+            for (const lmSet of result.landmarks) {
+              const extracted = extractRawFromLandmarks(lmSet);
+              if (extracted) rawPoses.push(extracted);
+            }
 
-              if (nowMs - lastMotionUpdateRef.current > 30) {
-                lastMotionUpdateRef.current = nowMs;
-                setTrackedPose(pose);
+            if (rawPoses.length > 0) {
+              candidateBodiesRef.current = rawPoses.map((p) => p.body);
+              const lock = lockedClimberRef.current;
+              let selectedIdx = -1;
+
+              if (lock) {
+                // Only match poses inside the locked climber's vertical climbing corridor (±20%)
+                let bestScore = Infinity;
+                for (let i = 0; i < rawPoses.length; i++) {
+                  const p = rawPoses[i];
+                  if (Math.abs(p.body.x - lock.laneX) <= 20) {
+                    const distToLast = Math.hypot(p.body.x - lock.lastX, p.body.y - lock.lastY);
+                    if (distToLast < bestScore) {
+                      bestScore = distToLast;
+                      selectedIdx = i;
+                    }
+                  }
+                }
+              } else if (trackedPoseRef.current.active && trackedPoseRef.current.source === 'mediapipe') {
+                // Continuous nearest-person preference when unlocked
+                let bestDist = Infinity;
+                for (let i = 0; i < rawPoses.length; i++) {
+                  const d = Math.hypot(
+                    rawPoses[i].body.x - trackedPoseRef.current.body.x,
+                    rawPoses[i].body.y - trackedPoseRef.current.body.y
+                  );
+                  if (d < bestDist) {
+                    bestDist = d;
+                    selectedIdx = i;
+                  }
+                }
+              } else {
+                selectedIdx = 0;
               }
 
-              triggerLineEvents(pose, prevFootY, nowMs);
-              return;
+              if (selectedIdx >= 0) {
+                const chosenRaw = rawPoses[selectedIdx];
+                if (lock) {
+                  lock.lastX = chosenRaw.body.x;
+                  lock.lastY = chosenRaw.body.y;
+                  if (Math.abs(chosenRaw.body.x - lock.laneX) <= 12) {
+                    lock.laneX = lock.laneX * 0.96 + chosenRaw.body.x * 0.04;
+                  }
+                }
+
+                const pose = smoothPose(chosenRaw);
+                const others = rawPoses.filter((_, idx) => idx !== selectedIdx).map((p) => p.body);
+                const prevFootY = prevFootYRef.current;
+                trackedPoseRef.current = pose;
+                prevFootYRef.current = pose.foot.y;
+                prevHandsYRef.current = pose.hands.y;
+
+                // Record timestamped pose trajectory for optional video overlay export
+                poseHistoryBufferRef.current.push({
+                  absTs: nowMs,
+                  hands: pose.hands,
+                  body: pose.body,
+                  foot: pose.foot,
+                  skeleton: pose.skeleton,
+                });
+                if (!st.isRunning && !postRollActiveRef.current && poseHistoryBufferRef.current.length > 30) {
+                  const cutoff = nowMs - 22000;
+                  if (poseHistoryBufferRef.current[0].absTs < cutoff) {
+                    poseHistoryBufferRef.current = poseHistoryBufferRef.current.filter((s) => s.absTs >= cutoff);
+                  }
+                }
+
+                if (nowMs - lastMotionUpdateRef.current > 30) {
+                  lastMotionUpdateRef.current = nowMs;
+                  setTrackedPose(pose);
+                  setSecondaryPoses(others);
+                }
+
+                triggerLineEvents(pose, prevFootY, nowMs);
+                return;
+              } else if (lock) {
+                // Locked climber temporarily occluded while passerby walks outside corridor: DO NOT switch to passerby!
+                if (nowMs - lastMotionUpdateRef.current > 180) {
+                  lastMotionUpdateRef.current = nowMs;
+                  trackedPoseRef.current = EMPTY_POSE;
+                  prevFootYRef.current = null;
+                  prevHandsYRef.current = null;
+                  setTrackedPose(EMPTY_POSE);
+                  setSecondaryPoses(rawPoses.map((p) => p.body));
+                }
+                return;
+              }
             }
+          } else {
+            candidateBodiesRef.current = [];
+            if (trackedPoseRef.current.active && nowMs - lastMotionUpdateRef.current > 240) {
+              lastMotionUpdateRef.current = nowMs;
+              trackedPoseRef.current = EMPTY_POSE;
+              prevFootYRef.current = null;
+              prevHandsYRef.current = null;
+              setTrackedPose(EMPTY_POSE);
+              setSecondaryPoses([]);
+            }
+            return;
           }
         } catch {
           // Fall through cleanly to CV fallback for this frame
@@ -2087,14 +2727,20 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
         const rawRowCounts = new Int32Array(H);
         const rawRowSumX = new Float32Array(H);
-        const prevBodyX = trackedPoseRef.current.active ? (trackedPoseRef.current.body.x / 100) * W : W * 0.5;
-        const restrictCorridor = trackedPoseRef.current.active;
+        const activeLock = lockedClimberRef.current;
+        const corridorCenterX = activeLock
+          ? (activeLock.laneX / 100) * W
+          : trackedPoseRef.current.active
+          ? (trackedPoseRef.current.body.x / 100) * W
+          : W * 0.5;
+        const corridorHalfW = activeLock ? W * 0.2 : W * 0.44;
+        const restrictCorridor = Boolean(activeLock) || trackedPoseRef.current.active;
 
         for (let y = 1; y < H - 1; y++) {
           let count = 0;
           let sx = 0;
           for (let x = 2; x < W - 2; x++) {
-            if (restrictCorridor && Math.abs(x - prevBodyX) > W * 0.44) continue;
+            if (restrictCorridor && Math.abs(x - corridorCenterX) > corridorHalfW) continue;
             if (heatmap[y * W + x] > 0.32) {
               count++;
               sx += x;
@@ -2212,24 +2858,42 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
             skeleton: undefined,
           };
 
+          candidateBodiesRef.current = [nextPose.body];
           const prevFootY = prevFootYRef.current;
           trackedPoseRef.current = nextPose;
           prevFootYRef.current = nextPose.foot.y;
           prevHandsYRef.current = nextPose.hands.y;
 
+          poseHistoryBufferRef.current.push({
+            absTs: nowMs,
+            hands: nextPose.hands,
+            body: nextPose.body,
+            foot: nextPose.foot,
+            skeleton: nextPose.skeleton,
+          });
+          if (!st.isRunning && !postRollActiveRef.current && poseHistoryBufferRef.current.length > 30) {
+            const cutoff = nowMs - 22000;
+            if (poseHistoryBufferRef.current[0].absTs < cutoff) {
+              poseHistoryBufferRef.current = poseHistoryBufferRef.current.filter((s) => s.absTs >= cutoff);
+            }
+          }
+
           if (nowMs - lastMotionUpdateRef.current > 35) {
             lastMotionUpdateRef.current = nowMs;
             setTrackedPose(nextPose);
+            setSecondaryPoses([]);
           }
 
           triggerLineEvents(nextPose, prevFootY, nowMs);
         } else {
+          candidateBodiesRef.current = [];
           if (trackedPoseRef.current.active && nowMs - lastMotionUpdateRef.current > 240) {
             lastMotionUpdateRef.current = nowMs;
             trackedPoseRef.current = EMPTY_POSE;
             prevFootYRef.current = null;
             prevHandsYRef.current = null;
             setTrackedPose(EMPTY_POSE);
+            setSecondaryPoses([]);
           }
         }
 
@@ -2261,15 +2925,13 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         }
         poseLandmarkerRef.current = null;
       }
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-        try {
-          mediaRecorderRef.current.stop();
-        } catch {
-          // ignore
-        }
-      }
+      if (postRollTimerRef.current) clearTimeout(postRollTimerRef.current);
+      if (postRollCountdownTimerRef.current) clearInterval(postRollCountdownTimerRef.current);
+      discardRecorderSlot(primaryRecSlotRef.current);
+      discardRecorderSlot(standbyRecSlotRef.current);
+      if (activeRunRecRef.current) discardRecorderSlot(activeRunRecRef.current.slot);
     };
-  }, []);
+  }, [discardRecorderSlot]);
 
   const formatChrono = (ms: number) => {
     const totalSeconds = Math.floor(ms / 1000);
@@ -2311,10 +2973,11 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     }
     if (finishedRun) {
       saveRun(finishedRun);
-      if (finishedRun.videoUrl) {
+      if (finishedRun.videoUrl || postRollPromiseRef.current) {
         showGestureFeedback('💾 Ukládám pokus i video...');
-        await handleDownloadVideoDirect();
-        showGestureFeedback(`✓ Pokus (${finishedRun.totalTime.toFixed(3)}s) i video uloženy!`);
+        await handleDownloadVideoDirect(finishedRun);
+        const latest = finishedRunRef.current || finishedRun;
+        showGestureFeedback(`✓ Pokus (${latest.totalTime.toFixed(3)}s) i video uloženy!`);
       } else {
         showGestureFeedback(`✓ Pokus (${finishedRun.totalTime.toFixed(3)}s) uložen!`);
       }
@@ -2332,17 +2995,16 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const handleGestureDelete = () => {
     if (isRunning) {
       resetTimer();
-      recordedChunksRef.current = [];
       setFinishedRun(null);
       setRecordedVideoUrl(null);
       showGestureFeedback('🗑️ Rozběhnutý pokus zrušen a smazán');
       return;
     }
     if (finishedRun) {
+      cancelPendingPostRoll();
       handleDeleteRunAttempt();
       setElapsedMs(0);
       setRecordedVideoUrl(null);
-      recordedChunksRef.current = [];
       showGestureFeedback('🗑️ Pokus i videozáznam smazány');
       return;
     }
@@ -2384,6 +3046,10 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   };
 
   const handleViewportTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (!isCameraExpanded) {
+      touchGestureRef.current.active = false;
+      return;
+    }
     const target = e.target as HTMLElement | null;
     if (
       draggingLine ||
@@ -2423,6 +3089,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   };
 
   const handleViewportTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (!isCameraExpanded) return;
     const state = touchGestureRef.current;
     if (!state.active || draggingLine) return;
 
@@ -2465,7 +3132,11 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
   const handleViewportTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
     const state = touchGestureRef.current;
-    if (!state.active) return;
+    if (!isCameraExpanded || !state.active) {
+      state.active = false;
+      setSwipePreview(null);
+      return;
+    }
 
     // Wait until all fingers lift
     if (e.touches.length > 0) return;
@@ -2673,6 +3344,34 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                   <span className="hidden sm:inline">Citlivost:</span>
                   <span className="capitalize">{sensitivityPreset === 'medium' ? 'Stř.' : sensitivityPreset === 'high' ? 'Vys.' : 'Níz.'}</span>
                 </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (lockedClimber) {
+                      unlockClimber();
+                    } else {
+                      setIsPickingClimber((prev) => !prev);
+                    }
+                  }}
+                  className={`min-h-[38px] px-2.5 sm:px-3 py-1 rounded-xl font-bold transition-all flex items-center gap-1 border ${
+                    lockedClimber
+                      ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border-emerald-400 dark:border-emerald-700'
+                      : isPickingClimber
+                      ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 border-amber-400 animate-pulse'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-transparent hover:bg-slate-200'
+                  }`}
+                  title="Kliknutím na osobu v obraze ji zafixujete, aby kolemjdoucí nenarušili sledování"
+                >
+                  {lockedClimber ? <Lock className="w-3.5 h-3.5 text-emerald-500" /> : <Unlock className="w-3.5 h-3.5" />}
+                  <span>
+                    {lockedClimber
+                      ? 'Zafixováno'
+                      : isPickingClimber
+                      ? 'Klepni na lezce'
+                      : 'Zafixovat osobu'}
+                  </span>
+                </button>
               </>
             )}
 
@@ -2844,228 +3543,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         </div>
       )}
 
-      {/* Manual 3-Line Calibration Panel (ONLY in AI Kamera mode) */}
-      {isAiCameraMode && cameraActive && isCalibrating && (
-        <div className="p-3.5 sm:p-5 rounded-2xl bg-white dark:bg-slate-900 border-2 border-red-500/50 shadow-xl space-y-3.5 animate-in fade-in">
-          <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2.5">
-            <div className="flex items-center gap-2">
-              <Sliders className="w-4 h-4 text-red-600" />
-              <span className="font-bold text-sm text-slate-900 dark:text-white">
-                Kalibrace linií AI Kamera: {categoryName} ({routeDef.heightMeters}m)
-              </span>
-            </div>
-            <button
-              onClick={() => setIsCalibrating(false)}
-              className="text-slate-500 hover:text-slate-900 dark:hover:text-white p-1 rounded-lg"
-              title="Zavřít kalibraci"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-
-          {/* Click-to-Place Horizontal Line Selector + Background Scan */}
-          <div className="p-2.5 rounded-xl bg-red-500/5 dark:bg-red-950/20 border border-red-500/20 space-y-2">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-[11px] font-bold text-red-600 dark:text-red-400">
-                👆 Chyťte a přetáhněte prstem kteroukoli linii přímo na obraze kamery (nebo klepněte):
-              </span>
-              <button
-                type="button"
-                onClick={captureWallBackground}
-                className="px-2.5 py-1 rounded-lg bg-slate-900 dark:bg-slate-800 text-white text-[11px] font-bold flex items-center gap-1 hover:bg-slate-700"
-              >
-                <Crosshair className="w-3 h-3 text-emerald-400" />
-                <span>Naskenovat prázdnou stěnu</span>
-              </button>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-1.5 text-xs">
-              <button
-                type="button"
-                onClick={() => setActiveCalibrationTool('foot')}
-                className={`px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5 transition-all ${
-                  activeCalibrationTool === 'foot'
-                    ? 'bg-emerald-600 text-white shadow-sm'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
-                }`}
-              >
-                <span className="w-2.5 h-2.5 rounded-full bg-emerald-300 border border-white" />
-                <span>Spodní linie (Start – Noha)</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveCalibrationTool('mid')}
-                className={`px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5 transition-all ${
-                  activeCalibrationTool === 'mid'
-                    ? 'bg-blue-600 text-white shadow-sm'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
-                }`}
-              >
-                <span className="w-2.5 h-2.5 rounded-full bg-blue-300 border border-white" />
-                <span>Středová linie (Mezičas – Ruka)</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveCalibrationTool('hand')}
-                className={`px-3 py-1.5 rounded-xl font-bold flex items-center gap-1.5 transition-all ${
-                  activeCalibrationTool === 'hand'
-                    ? 'bg-red-600 text-white shadow-sm'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
-                }`}
-              >
-                <span className="w-2.5 h-2.5 rounded-full bg-red-300 border border-white" />
-                <span>Vrcholová linie (Cíl – Ruka)</span>
-              </button>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            {/* 🔴 Top Line (Finish – Hands) */}
-            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-red-500/30 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-red-600 dark:text-red-400 flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full bg-red-500 inline-block" />
-                  <span>Vrcholová linie (Cíl)</span>
-                </span>
-                <span className="font-mono font-bold text-[11px] bg-red-500/15 text-red-600 dark:text-red-300 px-1.5 py-0.5 rounded">
-                  Y: {finishZoneY}%
-                </span>
-              </div>
-              <p className="text-[10px] text-slate-500">
-                Jakmile červená tečka (ruce) přesáhne linii, čas se zastaví.
-              </p>
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => updateCalibration('finishY', -1)}
-                  className="flex-1 py-1 px-1.5 rounded-lg bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 text-[11px] font-bold text-slate-800 dark:text-slate-200"
-                >
-                  Výše (-1%)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => updateCalibration('finishY', 1)}
-                  className="flex-1 py-1 px-1.5 rounded-lg bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 text-[11px] font-bold text-slate-800 dark:text-slate-200"
-                >
-                  Níže (+1%)
-                </button>
-              </div>
-              <input
-                type="range"
-                min={2}
-                max={65}
-                value={finishZoneY}
-                onChange={(e) => updateCalibration('finishY', Number(e.target.value) - finishZoneY)}
-                className="w-full accent-red-600 h-1 cursor-pointer"
-              />
-            </div>
-
-            {/* 🔵 Middle Line (Split – Hands) */}
-            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-blue-500/30 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full bg-blue-500 inline-block" />
-                  <span>Středová linie (Mezičas)</span>
-                </span>
-                <span className="font-mono font-bold text-[11px] bg-blue-500/15 text-blue-600 dark:text-blue-300 px-1.5 py-0.5 rounded">
-                  Y: {midZoneY}%
-                </span>
-              </div>
-              <p className="text-[10px] text-slate-500">
-                Jakmile červená tečka (ruce) překročí střed, uloží se mezičas.
-              </p>
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => updateCalibration('midY', -1)}
-                  className="flex-1 py-1 px-1.5 rounded-lg bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 text-[11px] font-bold text-slate-800 dark:text-slate-200"
-                >
-                  Výše (-1%)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => updateCalibration('midY', 1)}
-                  className="flex-1 py-1 px-1.5 rounded-lg bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 text-[11px] font-bold text-slate-800 dark:text-slate-200"
-                >
-                  Níže (+1%)
-                </button>
-              </div>
-              <input
-                type="range"
-                min={18}
-                max={80}
-                value={midZoneY}
-                onChange={(e) => updateCalibration('midY', Number(e.target.value) - midZoneY)}
-                className="w-full accent-blue-600 h-1 cursor-pointer"
-              />
-            </div>
-
-            {/* 🟢 Bottom Line (Start – Foot) */}
-            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-emerald-500/30 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" />
-                  <span>Spodní linie (Start)</span>
-                </span>
-                <span className="font-mono font-bold text-[11px] bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 px-1.5 py-0.5 rounded">
-                  Y: {startZoneY}%
-                </span>
-              </div>
-              <p className="text-[10px] text-slate-500">
-                Jakmile zelená tečka (noha) překročí linii nahoru, zapne se čas.
-              </p>
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => updateCalibration('startY', -1)}
-                  className="flex-1 py-1 px-1.5 rounded-lg bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 text-[11px] font-bold text-slate-800 dark:text-slate-200"
-                >
-                  Výše (-1%)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => updateCalibration('startY', 1)}
-                  className="flex-1 py-1 px-1.5 rounded-lg bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 text-[11px] font-bold text-slate-800 dark:text-slate-200"
-                >
-                  Níže (+1%)
-                </button>
-              </div>
-              <input
-                type="range"
-                min={55}
-                max={95}
-                value={startZoneY}
-                onChange={(e) => updateCalibration('startY', Number(e.target.value) - startZoneY)}
-                className="w-full accent-emerald-600 h-1 cursor-pointer"
-              />
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-xs">
-            <button
-              type="button"
-              onClick={resetCategoryCalibration}
-              className="text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 underline font-medium"
-            >
-              Obnovit výchozí pro {categoryName}
-            </button>
-            <button
-              type="button"
-              onClick={saveCalibrationExplicit}
-              className="px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold flex items-center gap-1.5 shadow-sm transition-colors"
-            >
-              <Check className="w-3.5 h-3.5" />
-              <span>Uložit kalibraci pro {categoryName}</span>
-            </button>
-          </div>
-
-          {calibrationSavedToast && (
-            <div className="p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-xs font-bold text-center animate-in fade-in">
-              {calibrationSavedToast}
-            </div>
-          )}
-        </div>
-      )}
+      {/* Direct On-Screen Calibration Active — controls sit inside the camera viewfinder (zero scrolling needed!) */}
 
       {/* Main Screen: Active Camera Viewport OR Clean Athletic Digital Card */}
       {cameraActive ? (
@@ -3179,12 +3657,12 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
             onTouchMove={handleViewportTouchMove}
             onTouchEnd={handleViewportTouchEnd}
             onTouchCancel={handleViewportTouchCancel}
-            className={`relative bg-black overflow-hidden flex items-center justify-center select-none touch-none transition-all duration-300 group cursor-pointer ${
+            className={`relative bg-black overflow-hidden flex items-center justify-center select-none transition-all duration-300 group cursor-pointer ${
               isCameraExpanded
-                ? 'flex-1 min-h-0 w-full rounded-none border-0'
+                ? 'flex-1 min-h-0 w-full rounded-none border-0 touch-none'
                 : cameraFit === 'contain'
-                ? 'w-full h-[68vh] min-h-[520px] max-h-[820px] rounded-3xl border-2 border-slate-800 shadow-2xl hover:ring-2 hover:ring-red-500/40'
-                : 'w-full aspect-[4/3] sm:aspect-video rounded-3xl border-2 border-slate-800 shadow-2xl hover:ring-2 hover:ring-red-500/40'
+                ? 'w-full h-[68vh] min-h-[520px] max-h-[820px] rounded-3xl border-2 border-slate-800 shadow-2xl hover:ring-2 hover:ring-red-500/40 touch-pan-y'
+                : 'w-full aspect-[4/3] sm:aspect-video rounded-3xl border-2 border-slate-800 shadow-2xl hover:ring-2 hover:ring-red-500/40 touch-pan-y'
             }`}
           >
             <video
@@ -3278,8 +3756,17 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
               </div>
             )}
 
+            {/* Calibration Live Toast inside Viewfinder (no scrolling to read confirmation) */}
+            {calibrationSavedToast && !swipePreview && (
+              <div className="absolute top-3 left-3 right-3 flex justify-center pointer-events-none z-40">
+                <div className="px-3 py-1.5 rounded-full bg-emerald-950/90 text-emerald-200 text-[11px] font-bold border border-emerald-400/50 shadow-xl backdrop-blur-md">
+                  {calibrationSavedToast}
+                </div>
+              </div>
+            )}
+
             {/* Floating Expand/Collapse Button right inside Viewfinder for easy 1-tap reach on phone */}
-            {!isCameraExpanded && (
+            {!isCameraExpanded && !isCalibrating && (
               <button
                 type="button"
                 data-no-gesture="true"
@@ -3295,6 +3782,48 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
               </button>
             )}
 
+            {/* Picking Climber Prompt Toast */}
+            {isAiCameraMode && isPickingClimber && (
+              <div className="absolute top-3 left-3 right-3 flex justify-center pointer-events-none z-40">
+                <div className="px-3.5 py-1.5 rounded-full bg-amber-500 text-slate-950 text-xs font-black shadow-xl animate-pulse">
+                  👆 Klepněte přímo na lezce, kterého chcete zafixovat
+                </div>
+              </div>
+            )}
+
+            {/* Floating Lock/Unlock Pill inside Fullscreen Camera (easy 1-tap access without exiting) */}
+            {isCameraExpanded && isAiCameraMode && !isCalibrating && !finishedRun && (
+              <button
+                type="button"
+                data-no-gesture="true"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (lockedClimber) {
+                    unlockClimber();
+                  } else {
+                    setIsPickingClimber((prev) => !prev);
+                  }
+                }}
+                className={`absolute bottom-3 left-3 z-30 px-2.5 py-1.5 rounded-xl text-[11px] font-bold border shadow-lg backdrop-blur-sm flex items-center gap-1.5 transition-all active:scale-95 ${
+                  lockedClimber
+                    ? 'bg-emerald-950/85 text-emerald-200 border-emerald-400/60'
+                    : isPickingClimber
+                    ? 'bg-amber-500 text-slate-950 border-amber-200 animate-pulse'
+                    : 'bg-slate-950/85 hover:bg-slate-900 text-white border-white/20'
+                }`}
+                title="Klepněte na osobu v obraze pro zafixování sledování"
+              >
+                {lockedClimber ? <Lock className="w-3.5 h-3.5 text-emerald-400" /> : <Unlock className="w-3.5 h-3.5" />}
+                <span>
+                  {lockedClimber
+                    ? 'Zafixováno · Odemknout'
+                    : isPickingClimber
+                    ? 'Klepni na osobu...'
+                    : 'Zafixovat osobu'}
+                </span>
+              </button>
+            )}
+
             {/* AI Kamera Overlay ONLY: Aligned 1:1 with rendered video pixels */}
             {isAiCameraMode && showGuides && (
               <div
@@ -3307,6 +3836,17 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                 }}
                 className="absolute pointer-events-none z-10"
               >
+                {/* Locked Climber Vertical Corridor Indicator */}
+                {lockedClimber && (
+                  <div
+                    style={{
+                      left: `${Math.max(0, lockedClimber.laneX - 20)}%`,
+                      width: `${Math.min(100, lockedClimber.laneX + 20) - Math.max(0, lockedClimber.laneX - 20)}%`,
+                    }}
+                    className="absolute top-0 bottom-0 border-x border-dashed border-emerald-400/45 bg-emerald-500/[0.04]"
+                  />
+                )}
+
                 {/* Subtle vertical center guide */}
                 <div className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2 w-px border-l border-dashed border-white/15" />
 
@@ -3513,16 +4053,36 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                       </span>
                     </div>
 
-                    {/* 🔵 Blue Dot = Torso/Body (Tělo) */}
-                    <div
+                    {/* 🔵 Blue Dot = Torso/Body (Tělo) — Tap directly to Lock/Unlock Climber! */}
+                    <button
+                      type="button"
+                      data-no-gesture="true"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (lockedClimber) {
+                          unlockClimber();
+                        } else {
+                          lockOntoPoint(trackedPose.body.x, trackedPose.body.y);
+                        }
+                      }}
                       style={{ left: `${trackedPose.body.x}%`, top: `${trackedPose.body.y}%` }}
-                      className="absolute -translate-x-1/2 -translate-y-1/2 flex items-center gap-1"
+                      className="pointer-events-auto cursor-pointer absolute -translate-x-1/2 -translate-y-1/2 flex items-center gap-1 group/lock"
+                      title={lockedClimber ? 'Zafixováno (klepnutím odemknete)' : 'Klepnutím zafixujete tohoto lezce'}
                     >
-                      <div className="w-4 h-4 rounded-full bg-blue-500 border-2 border-white shadow-[0_0_12px_rgba(59,130,246,0.95)]" />
-                      <span className="px-1.5 py-0.5 rounded bg-blue-600/90 text-white text-[9px] font-black shadow">
-                        Tělo
+                      <div
+                        className={`w-4 h-4 rounded-full bg-blue-500 border-2 shadow-[0_0_12px_rgba(59,130,246,0.95)] transition-transform group-hover/lock:scale-125 ${
+                          lockedClimber ? 'border-emerald-300 ring-4 ring-emerald-400/40' : 'border-white'
+                        }`}
+                      />
+                      <span
+                        className={`px-1.5 py-0.5 rounded text-white text-[9px] font-black shadow flex items-center gap-1 ${
+                          lockedClimber ? 'bg-emerald-600/95 border border-emerald-300/70' : 'bg-blue-600/90'
+                        }`}
+                      >
+                        {lockedClimber && <Lock className="w-2.5 h-2.5" />}
+                        <span>{lockedClimber ? 'Zafixováno' : 'Tělo'}</span>
                       </span>
-                    </div>
+                    </button>
 
                     {/* 🟢 Green Dot = Foot (Noha) */}
                     <div
@@ -3536,6 +4096,29 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                     </div>
                   </>
                 )}
+
+                {/* Other Detected People in Frame — Tap to Switch & Lock */}
+                {secondaryPoses.map((pt, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    data-no-gesture="true"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      lockOntoPoint(pt.x, pt.y);
+                    }}
+                    style={{ left: `${pt.x}%`, top: `${pt.y}%` }}
+                    className={`pointer-events-auto cursor-pointer absolute -translate-x-1/2 -translate-y-1/2 flex items-center gap-1 transition-opacity ${
+                      lockedClimber && !isPickingClimber ? 'opacity-45 hover:opacity-95' : 'opacity-90 hover:scale-110'
+                    }`}
+                    title="Klepnutím přepnete a zafixujete tuto osobu"
+                  >
+                    <div className="w-3.5 h-3.5 rounded-full bg-slate-900/80 border-2 border-amber-300 shadow-md" />
+                    <span className="px-1.5 py-0.5 rounded bg-slate-900/85 text-amber-200 text-[9px] font-bold border border-amber-300/40">
+                      Zafixovat
+                    </span>
+                  </button>
+                ))}
               </div>
             )}
 
@@ -3566,30 +4149,125 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
               </div>
             )}
 
-            {/* Expanded Mode Overlay Controls: Finished Run Quick Card + Calibrate Pill */}
-            {isCameraExpanded && isAiCameraMode && isCalibrating && (
+            {/* Compact Floating Calibration Dock directly on Camera Viewfinder (zero scrolling!) */}
+            {isAiCameraMode && isCalibrating && (
               <div
                 data-no-gesture="true"
                 onClick={(e) => e.stopPropagation()}
-                className="absolute bottom-3 left-3 right-3 z-30 p-2 rounded-2xl bg-slate-950/90 border border-white/15 backdrop-blur-md flex flex-wrap items-center justify-between gap-2 text-[11px]"
+                className="absolute bottom-2.5 left-2.5 right-2.5 z-30 p-2 rounded-2xl bg-slate-950/90 border border-white/20 backdrop-blur-md space-y-1.5 shadow-2xl"
               >
-                <span className="text-slate-300 font-bold">
-                  Přetáhněte linie prstem ({finishZoneY}% / {midZoneY}% / {startZoneY}%)
-                </span>
-                <div className="flex items-center gap-1.5">
+                {/* Row 1: Select Line + Micro-Nudge (-1% / +1%) */}
+                <div className="flex flex-wrap items-center justify-between gap-1.5">
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setActiveCalibrationTool('foot')}
+                      className={`px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-all ${
+                        activeCalibrationTool === 'foot'
+                          ? 'bg-emerald-600 text-white ring-1 ring-emerald-300'
+                          : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                      }`}
+                    >
+                      <span className="w-2 h-2 rounded-full bg-emerald-300" />
+                      <span>Start {startZoneY}%</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveCalibrationTool('mid')}
+                      className={`px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-all ${
+                        activeCalibrationTool === 'mid'
+                          ? 'bg-blue-600 text-white ring-1 ring-blue-300'
+                          : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                      }`}
+                    >
+                      <span className="w-2 h-2 rounded-full bg-blue-300" />
+                      <span>Střed {midZoneY}%</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveCalibrationTool('hand')}
+                      className={`px-2 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-all ${
+                        activeCalibrationTool === 'hand'
+                          ? 'bg-red-600 text-white ring-1 ring-red-300'
+                          : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                      }`}
+                    >
+                      <span className="w-2 h-2 rounded-full bg-red-300" />
+                      <span>Cíl {finishZoneY}%</span>
+                    </button>
+                  </div>
+
+                  {/* Fine ±1% Nudge for active line */}
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateCalibration(
+                          activeCalibrationTool === 'foot'
+                            ? 'startY'
+                            : activeCalibrationTool === 'hand'
+                            ? 'finishY'
+                            : 'midY',
+                          -1
+                        )
+                      }
+                      className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-[10px] font-bold flex items-center gap-0.5"
+                      title="Posunout vybranou linii výše (-1%)"
+                    >
+                      <ChevronUp className="w-3 h-3" />
+                      <span>Výš</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateCalibration(
+                          activeCalibrationTool === 'foot'
+                            ? 'startY'
+                            : activeCalibrationTool === 'hand'
+                            ? 'finishY'
+                            : 'midY',
+                          1
+                        )
+                      }
+                      className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-[10px] font-bold flex items-center gap-0.5"
+                      title="Posunout vybranou linii níže (+1%)"
+                    >
+                      <ChevronDown className="w-3 h-3" />
+                      <span>Níž</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Row 2: Actions right inside camera (Wall Scan, Reset, Save & Close) */}
+                <div className="flex flex-wrap items-center justify-between gap-1.5 pt-1 border-t border-white/10 text-[10px]">
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={captureWallBackground}
+                      className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold flex items-center gap-1"
+                    >
+                      <Crosshair className="w-3 h-3 text-blue-400" />
+                      <span>Sken stěny</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={resetCategoryCalibration}
+                      className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold"
+                    >
+                      Výchozí
+                    </button>
+                  </div>
+
                   <button
                     type="button"
-                    onClick={saveCalibrationExplicit}
-                    className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white font-bold"
+                    onClick={() => {
+                      saveCalibrationExplicit();
+                      setIsCalibrating(false);
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold flex items-center gap-1"
                   >
-                    Uložit linie
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIsCalibrating(false)}
-                    className="px-2 py-1 rounded-lg bg-slate-800 text-slate-200 font-bold"
-                  >
-                    Hotovo
+                    <Check className="w-3 h-3" />
+                    <span>Hotovo</span>
                   </button>
                 </div>
               </div>
@@ -3599,44 +4277,165 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
               <div
                 data-no-gesture="true"
                 onClick={(e) => e.stopPropagation()}
-                className="absolute bottom-3 left-3 right-3 z-30 p-3 rounded-2xl bg-slate-950/90 border border-emerald-500/40 backdrop-blur-md flex flex-wrap items-center justify-between gap-2 shadow-2xl"
+                className="absolute bottom-3 left-3 right-3 z-30 p-3 rounded-2xl bg-slate-950/90 border border-emerald-500/40 backdrop-blur-md space-y-2 shadow-2xl"
               >
-                <div className="flex items-center gap-2">
-                  <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
-                  <div>
-                    <div className="text-lg font-mono font-black text-white leading-none">
-                      {finishedRun.totalTime.toFixed(3)}s
-                    </div>
-                    <div className="text-[10px] text-slate-300 font-mono mt-0.5">
-                      {finishedRun.splits.split1.toFixed(2)}s · {finishedRun.splits.split2.toFixed(2)}s ·{' '}
-                      {finishedRun.splits.split3.toFixed(2)}s
+                {videoShareFeedback && (
+                  <div className="px-2.5 py-1 rounded-xl bg-blue-950/70 border border-blue-400/40 text-blue-200 text-[11px] font-bold text-center">
+                    {videoShareFeedback}
+                  </div>
+                )}
+                {isPostRollRecording && (
+                  <div className="flex items-center justify-between gap-2 px-2.5 py-1 rounded-xl bg-amber-950/70 border border-amber-400/40 text-amber-200 text-[11px] font-bold">
+                    <span className="animate-pulse">
+                      🎬 Nahrávám +3s po dohmatu ({postRollRemainingSec}s)...
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => finalizePostRollNowRef.current?.()}
+                      className="px-2 py-0.5 rounded-lg bg-amber-500 text-slate-950 text-[10px] font-black"
+                    >
+                      Ukončit hned
+                    </button>
+                  </div>
+                )}
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+                    <div>
+                      <div className="text-lg font-mono font-black text-white leading-none">
+                        {finishedRun.totalTime.toFixed(3)}s
+                      </div>
+                      <div className="text-[10px] text-slate-300 font-mono mt-0.5">
+                        {finishedRun.splits.split1.toFixed(2)}s · {finishedRun.splits.split2.toFixed(2)}s ·{' '}
+                        {finishedRun.splits.split3.toFixed(2)}s
+                      </div>
                     </div>
                   </div>
+                  <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-bold">
+                    {(finishedRun.videoUrl || isPostRollRecording) &&
+                      ((finishedRun.poseTimeline && finishedRun.poseTimeline.length > 0) || isAiCameraMode) && (
+                        <button
+                          type="button"
+                          onClick={() => setIncludePoseInVideo((prev) => !prev)}
+                          className={`px-2 py-1.5 rounded-xl border flex items-center gap-1 transition-all ${
+                            includePoseInVideo
+                              ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200'
+                              : 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
+                          }`}
+                          title="Volitelně zaznamenat do videa tečky pozice ruky, těla a nohy"
+                        >
+                          <span className="flex items-center gap-0.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                            <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                          </span>
+                          <span>{includePoseInVideo ? 'AI body ✓' : 'AI body'}</span>
+                        </button>
+                      )}
+                    <button
+                      type="button"
+                      onClick={() => void handleGestureSave()}
+                      disabled={isExportingVideo}
+                      className="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white flex items-center gap-1 disabled:opacity-60"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Uložit</span>
+                    </button>
+                    {(finishedRun.videoUrl || isPostRollRecording) && (
+                      <button
+                        type="button"
+                        onClick={() => void handleShareVideoToCloud()}
+                        disabled={isExportingVideo}
+                        className="px-2.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white flex items-center gap-1 disabled:opacity-60"
+                        title="Odeslat video s časem na Google Disk nebo OneDrive"
+                      >
+                        <Cloud className="w-3.5 h-3.5" />
+                        <span>{isExportingVideo ? '...' : 'Disk'}</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleGestureDelete}
+                      className="px-2.5 py-1.5 rounded-xl bg-red-600/85 hover:bg-red-500 text-white flex items-center gap-1"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Smazat</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleGestureRestart}
+                      className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white flex items-center gap-1"
+                      title="Nový pokus"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-1.5 text-[11px] font-bold">
-                  <button
-                    type="button"
-                    onClick={() => void handleGestureSave()}
-                    className="px-2.5 py-1.5 rounded-xl bg-emerald-600 text-white flex items-center gap-1"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Uložit</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleGestureDelete}
-                    className="px-2.5 py-1.5 rounded-xl bg-red-600/80 text-white flex items-center gap-1"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>Smazat</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleGestureRestart}
-                    className="px-2.5 py-1.5 rounded-xl bg-slate-800 text-white flex items-center gap-1"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                  </button>
+              </div>
+            )}
+
+            {/* Fullscreen Cloud Picker Overlay (visible directly inside fullscreen camera) */}
+            {isCameraExpanded && showCloudPicker && finishedRun?.videoUrl && (
+              <div
+                data-no-gesture="true"
+                onClick={(e) => e.stopPropagation()}
+                className="absolute inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
+              >
+                <div className="w-full max-w-sm p-4 rounded-2xl bg-slate-900 border border-blue-500/40 space-y-3 shadow-2xl">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Cloud className="w-4 h-4 text-blue-400" />
+                      <span className="font-bold text-xs text-white">Odeslat video na Disk</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowCloudPicker(false)}
+                      className="p-1 text-slate-400 hover:text-white"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-300 leading-relaxed">
+                    Stáhněte video s běžícím časem a nahrajte ho do svého cloudového úložiště:
+                  </p>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <a
+                      href="https://drive.google.com"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 flex items-center justify-between text-white font-bold"
+                    >
+                      <span>📁 Google Disk</span>
+                      <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
+                    </a>
+                    <a
+                      href="https://onedrive.live.com"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 flex items-center justify-between text-white font-bold"
+                    >
+                      <span>☁️ OneDrive</span>
+                      <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
+                    </a>
+                  </div>
+                  <div className="flex items-center justify-between pt-1 text-[11px]">
+                    <button
+                      type="button"
+                      onClick={() => void handleDownloadVideoDirect()}
+                      disabled={isExportingVideo}
+                      className="font-bold text-emerald-400 hover:underline flex items-center gap-1 disabled:opacity-60"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Stáhnout video do zařízení</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowCloudPicker(false)}
+                      className="text-slate-400 hover:text-white font-semibold"
+                    >
+                      Hotovo
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
@@ -3669,11 +4468,11 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                 </div>
               </div>
               <div className="flex flex-wrap items-center justify-center sm:justify-start gap-x-3 gap-y-1 pt-1 border-t border-slate-100 dark:border-slate-800 text-[10px] text-slate-500 dark:text-slate-400 font-semibold">
-                <span>Gesta na kameře:</span>
+                <span>Gesta jen v režimu Celý displej:</span>
                 <span>← Doleva: Uložit</span>
                 <span>2× → Dvěma prsty doprava: Smazat</span>
                 <span>↑ Nahoru: Restart</span>
-                <span>↓ Dolů: Vyskočit z režimu</span>
+                <span>↓ Dolů: Zpět</span>
               </div>
             </div>
           )}
@@ -3933,13 +4732,31 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
             );
           })()}
 
+          {/* Post-Roll Recording Banner while +3s finish buffer captures */}
+          {isPostRollRecording && !finishedRun.videoUrl && (
+            <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
+              <div className="p-2.5 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 flex items-center justify-between gap-2 text-xs font-bold text-amber-800 dark:text-amber-200">
+                <span className="animate-pulse">
+                  🎬 Dokončuji +3s videozáznamu po dohmatu ({postRollRemainingSec}s)...
+                </span>
+                <button
+                  type="button"
+                  onClick={() => finalizePostRollNowRef.current?.()}
+                  className="px-2.5 py-1 rounded-xl bg-amber-500 text-slate-950 text-[11px] font-black"
+                >
+                  Ukončit hned
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Integrated Recorded Video Player */}
           {finishedRun.videoUrl && (
             <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-bold">
                 <span className="text-slate-900 dark:text-white flex items-center gap-1.5">
                   <Video className="w-4 h-4 text-red-600" />
-                  <span>Videozáznam výlezu</span>
+                  <span>Videozáznam (-3s před startem / +3s po cíli)</span>
                 </span>
 
                 {showDeleteVideoConfirm ? (
@@ -3964,9 +4781,30 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                   </div>
                 ) : (
                   <div className="flex flex-wrap items-center gap-1.5">
+                    {((finishedRun.poseTimeline && finishedRun.poseTimeline.length > 0) ||
+                      (recordedPoseDataMapRef.current.get(finishedRun.id)?.poseTimeline?.length || 0) > 0) && (
+                      <button
+                        type="button"
+                        onClick={() => setIncludePoseInVideo((prev) => !prev)}
+                        className={`px-2.5 py-1 rounded-xl border transition-all flex items-center gap-1.5 text-[11px] font-bold ${
+                          includePoseInVideo
+                            ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-400 text-emerald-700 dark:text-emerald-300'
+                            : 'bg-slate-100 dark:bg-slate-800 border-transparent text-slate-600 dark:text-slate-300 hover:bg-slate-200'
+                        }`}
+                        title="Volitelně vložit do videa sledování pozice ruky, těla a nohy"
+                      >
+                        <span className="flex items-center gap-0.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                          <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                        </span>
+                        <span>{includePoseInVideo ? 'S AI body ✓' : 'Vložit AI body'}</span>
+                      </button>
+                    )}
+
                     <button
                       type="button"
-                      onClick={handleDownloadVideoDirect}
+                      onClick={() => void handleDownloadVideoDirect()}
                       disabled={isExportingVideo}
                       className="px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:text-red-600 hover:bg-slate-200 transition-colors flex items-center gap-1 text-[11px] font-bold disabled:opacity-60"
                       title="Uložit video s běžícím časem v pravém horním rohu do zařízení"
@@ -4011,7 +4849,32 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                   src={finishedRun.videoUrl}
                   controls
                   playsInline
-                  onPlay={() => setIsPlaybackPlaying(true)}
+                  onLoadedMetadata={() => {
+                    const vid = playbackVideoRef.current;
+                    const tMeta =
+                      finishedRun.videoTiming || recordedPoseDataMapRef.current.get(finishedRun.id)?.timing;
+                    if (vid && tMeta && tMeta.preRollStartSec > 0.12) {
+                      try {
+                        vid.currentTime = tMeta.preRollStartSec;
+                        setPlaybackVideoSec(tMeta.preRollStartSec);
+                      } catch {
+                        // ignore
+                      }
+                    }
+                  }}
+                  onPlay={() => {
+                    const vid = playbackVideoRef.current;
+                    const tMeta =
+                      finishedRun.videoTiming || recordedPoseDataMapRef.current.get(finishedRun.id)?.timing;
+                    if (vid && tMeta && vid.currentTime < tMeta.preRollStartSec - 0.15) {
+                      try {
+                        vid.currentTime = tMeta.preRollStartSec;
+                      } catch {
+                        // ignore
+                      }
+                    }
+                    setIsPlaybackPlaying(true);
+                  }}
                   onPause={() => {
                     setIsPlaybackPlaying(false);
                     if (playbackVideoRef.current) {
@@ -4020,12 +4883,20 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                   }}
                   onEnded={() => {
                     setIsPlaybackPlaying(false);
-                    setPlaybackVideoSec(finishedRun.totalTime);
+                    const tMeta =
+                      finishedRun.videoTiming || recordedPoseDataMapRef.current.get(finishedRun.id)?.timing;
+                    setPlaybackVideoSec(tMeta ? tMeta.postRollEndSec : finishedRun.totalTime);
                   }}
                   onTimeUpdate={() => {
-                    if (playbackVideoRef.current) {
-                      setPlaybackVideoSec(playbackVideoRef.current.currentTime);
+                    const vid = playbackVideoRef.current;
+                    if (!vid) return;
+                    const tMeta =
+                      finishedRun.videoTiming || recordedPoseDataMapRef.current.get(finishedRun.id)?.timing;
+                    if (tMeta && vid.currentTime >= tMeta.postRollEndSec && !vid.paused) {
+                      vid.pause();
+                      setIsPlaybackPlaying(false);
                     }
+                    setPlaybackVideoSec(vid.currentTime);
                   }}
                   onSeeked={() => {
                     if (playbackVideoRef.current) {
@@ -4034,19 +4905,94 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                   }}
                   className="w-full h-full object-contain"
                 />
-                {/* Top-left Live Running / Final Chrono Overlay */}
+
+                {/* Optional Live Preview of AI Pose Tracking (Hands/Body/Foot + Skeleton) */}
+                {includePoseInVideo &&
+                  (() => {
+                    const mem = recordedPoseDataMapRef.current.get(finishedRun.id);
+                    const timeline = finishedRun.poseTimeline || mem?.poseTimeline;
+                    const sample = findPoseSampleAtTime(timeline, playbackVideoSec);
+                    if (!sample) return null;
+                    return (
+                      <div className="pointer-events-none absolute inset-0">
+                        <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none">
+                          {sample.skeleton?.map((seg, i) => (
+                            <line
+                              key={i}
+                              x1={seg.from.x}
+                              y1={seg.from.y}
+                              x2={seg.to.x}
+                              y2={seg.to.y}
+                              stroke="rgba(255,255,255,0.75)"
+                              strokeWidth="0.7"
+                              strokeLinecap="round"
+                            />
+                          ))}
+                        </svg>
+                        <div
+                          style={{ left: `${sample.hands.x}%`, top: `${sample.hands.y}%` }}
+                          className="absolute -translate-x-1/2 -translate-y-1/2 flex items-center gap-1"
+                        >
+                          <div className="w-3.5 h-3.5 rounded-full bg-red-500 border-2 border-white shadow" />
+                          <span className="px-1 py-0.5 rounded bg-red-600/90 text-white text-[9px] font-black">Ruka</span>
+                        </div>
+                        <div
+                          style={{ left: `${sample.body.x}%`, top: `${sample.body.y}%` }}
+                          className="absolute -translate-x-1/2 -translate-y-1/2 flex items-center gap-1"
+                        >
+                          <div className="w-3.5 h-3.5 rounded-full bg-blue-500 border-2 border-white shadow" />
+                          <span className="px-1 py-0.5 rounded bg-blue-600/90 text-white text-[9px] font-black">Tělo</span>
+                        </div>
+                        <div
+                          style={{ left: `${sample.foot.x}%`, top: `${sample.foot.y}%` }}
+                          className="absolute -translate-x-1/2 -translate-y-1/2 flex items-center gap-1"
+                        >
+                          <div className="w-3.5 h-3.5 rounded-full bg-emerald-500 border-2 border-white shadow" />
+                          <span className="px-1 py-0.5 rounded bg-emerald-600/90 text-white text-[9px] font-black">Noha</span>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                {/* Top-right Live Running / Final Chrono Overlay */}
                 {(() => {
                   const vid = playbackVideoRef.current;
-                  const vidDur = vid?.duration;
-                  let mappedSec = playbackVideoSec;
-                  if (vidDur && Number.isFinite(vidDur) && vidDur > 0.25 && vidDur < finishedRun.totalTime) {
-                    mappedSec = (playbackVideoSec / vidDur) * finishedRun.totalTime;
+                  const tMeta =
+                    finishedRun.videoTiming || recordedPoseDataMapRef.current.get(finishedRun.id)?.timing;
+                  let displaySec = finishedRun.totalTime;
+                  let isPreStart = false;
+                  let isAtFinish = true;
+
+                  if (tMeta) {
+                    const showLive = isPlaybackPlaying || playbackVideoSec > tMeta.preRollStartSec + 0.01;
+                    if (!showLive || playbackVideoSec >= tMeta.climbEndSec) {
+                      displaySec = finishedRun.totalTime;
+                      isAtFinish = true;
+                    } else if (playbackVideoSec < tMeta.climbStartSec) {
+                      displaySec = 0;
+                      isPreStart = true;
+                      isAtFinish = false;
+                    } else {
+                      const span = Math.max(0.05, tMeta.climbEndSec - tMeta.climbStartSec);
+                      displaySec = Math.min(
+                        finishedRun.totalTime,
+                        Math.max(0, ((playbackVideoSec - tMeta.climbStartSec) / span) * finishedRun.totalTime)
+                      );
+                      isAtFinish = displaySec >= finishedRun.totalTime - 0.012;
+                    }
+                  } else {
+                    const vidDur = vid?.duration;
+                    let mappedSec = playbackVideoSec;
+                    if (vidDur && Number.isFinite(vidDur) && vidDur > 0.25 && vidDur < finishedRun.totalTime) {
+                      mappedSec = (playbackVideoSec / vidDur) * finishedRun.totalTime;
+                    }
+                    const showLiveRunning = isPlaybackPlaying || (playbackVideoSec > 0.01 && !vid?.ended);
+                    displaySec = showLiveRunning
+                      ? Math.min(finishedRun.totalTime, Math.max(0, mappedSec))
+                      : finishedRun.totalTime;
+                    isAtFinish = !showLiveRunning || displaySec >= finishedRun.totalTime - 0.012;
                   }
-                  const showLiveRunning = isPlaybackPlaying || (playbackVideoSec > 0.01 && !vid?.ended);
-                  const displaySec = showLiveRunning
-                    ? Math.min(finishedRun.totalTime, Math.max(0, mappedSec))
-                    : finishedRun.totalTime;
-                  const isAtFinish = !showLiveRunning || displaySec >= finishedRun.totalTime - 0.012;
+
                   const formatted = `${Math.floor(displaySec)
                     .toString()
                     .padStart(2, '0')}.${Math.floor((displaySec % 1) * 1000)
@@ -4058,12 +5004,18 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                       className={`pointer-events-none absolute top-3 right-3 px-2.5 py-1.5 rounded-xl bg-slate-950/85 border border-l-4 shadow-lg backdrop-blur-sm ${
                         isAtFinish
                           ? 'border-emerald-400/50 border-l-emerald-500'
+                          : isPreStart
+                          ? 'border-amber-400/50 border-l-amber-500'
                           : 'border-white/20 border-l-red-500'
                       }`}
                     >
                       <div
                         className={`text-[9px] font-bold uppercase tracking-wider leading-tight ${
-                          isAtFinish ? 'text-emerald-300' : 'text-slate-300'
+                          isAtFinish
+                            ? 'text-emerald-300'
+                            : isPreStart
+                            ? 'text-amber-300'
+                            : 'text-slate-300'
                         }`}
                       >
                         {(finishedRun.climberName || 'LEZEC').toUpperCase()} ·{' '}
@@ -4072,7 +5024,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                           : finishedRun.routeCategory === 'youth_u15'
                           ? '10m U15'
                           : '10m U13'}
-                        {isAtFinish ? ' · CÍL' : ''}
+                        {isAtFinish ? ' · CÍL' : isPreStart ? ' · START' : ''}
                       </div>
                       <div className="text-lg sm:text-xl font-mono font-black text-white tabular-nums leading-tight">
                         {formatted}
@@ -4160,7 +5112,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                   <div className="flex items-center justify-between pt-1 text-[11px]">
                     <button
                       type="button"
-                      onClick={handleDownloadVideoDirect}
+                      onClick={() => void handleDownloadVideoDirect()}
                       className="font-bold text-red-600 dark:text-red-400 hover:underline flex items-center gap-1"
                     >
                       <Download className="w-3 h-3" />

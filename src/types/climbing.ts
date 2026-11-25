@@ -16,6 +16,32 @@ export interface AIAnalysisResult {
   recommendedDrill: string;
 }
 
+export interface PosePoint2D {
+  x: number;
+  y: number;
+}
+
+export interface RecordedPoseSample {
+  tSec: number;
+  hands: PosePoint2D;
+  body: PosePoint2D;
+  foot: PosePoint2D;
+  skeleton?: { from: PosePoint2D; to: PosePoint2D }[];
+}
+
+export interface VideoTimingMeta {
+  preRollStartSec: number;
+  climbStartSec: number;
+  climbEndSec: number;
+  postRollEndSec: number;
+}
+
+export interface VideoCalibrationLines {
+  startY: number;
+  midY: number;
+  finishY: number;
+}
+
 export interface SpeedRun {
   id: string;
   date: string;
@@ -33,6 +59,9 @@ export interface SpeedRun {
   gender: 'men' | 'women';
   notes?: string;
   videoUrl?: string;
+  videoTiming?: VideoTimingMeta;
+  videoCalibration?: VideoCalibrationLines;
+  poseTimeline?: RecordedPoseSample[];
   cloudSyncStatus?: 'local' | 'synced_gdrive' | 'synced_onedrive';
   isPersonalBest?: boolean;
   aiAnalysis?: AIAnalysisResult;
