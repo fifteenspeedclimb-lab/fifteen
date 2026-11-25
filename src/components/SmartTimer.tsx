@@ -264,6 +264,8 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const [showCloudPicker, setShowCloudPicker] = useState<boolean>(false);
   const [isExportingVideo, setIsExportingVideo] = useState<boolean>(false);
   const [includePoseInVideo, setIncludePoseInVideo] = useState<boolean>(false);
+  const [videoTargetFps, setVideoTargetFps] = useState<30 | 60>(60);
+  const [actualCameraFps, setActualCameraFps] = useState<number | null>(null);
   const [isPostRollRecording, setIsPostRollRecording] = useState<boolean>(false);
   const [postRollRemainingSec, setPostRollRemainingSec] = useState<number>(0);
   const [videoBoxRect, setVideoBoxRect] = useState<{ left: number; top: number; width: number; height: number }>({
@@ -578,8 +580,9 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     const calLines = run.videoCalibration || savedMem?.calibration;
     const poseTimeline = run.poseTimeline || savedMem?.poseTimeline;
     const hasPoseData = Boolean(withPoseOverlay && poseTimeline && poseTimeline.length > 0);
+    const exportFps = videoTargetFps;
 
-    const cacheKey = `${run.id}_v3_${hasPoseData ? 'pose' : 'clean'}_${run.totalTime.toFixed(3)}`;
+    const cacheKey = `${run.id}_v4_${exportFps}fps_${hasPoseData ? 'pose' : 'clean'}_${run.totalTime.toFixed(3)}`;
     if (exportedVideoCacheRef.current?.key === cacheKey) {
       return exportedVideoCacheRef.current.result;
     }
@@ -660,21 +663,32 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       const exportCanvas = document.createElement('canvas');
       exportCanvas.width = W;
       exportCanvas.height = H;
-      const ctx = exportCanvas.getContext('2d');
+      const ctx = exportCanvas.getContext('2d', { alpha: false, desynchronized: true });
 
       if (!ctx || typeof exportCanvas.captureStream !== 'function') {
         return fallbackRawBlob();
       }
 
-      const stream = exportCanvas.captureStream(30);
+      const stream = exportCanvas.captureStream(exportFps);
       const mimeTypes = [
-        'video/webm;codecs=vp9',
+        'video/webm;codecs=h264',
+        'video/mp4;codecs=avc1',
         'video/webm;codecs=vp8',
         'video/webm',
         'video/mp4',
+        'video/webm;codecs=vp9',
       ];
       const mimeType = mimeTypes.find((type) => MediaRecorder.isTypeSupported(type)) || '';
-      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      const recOptions: MediaRecorderOptions = {
+        ...(mimeType ? { mimeType } : {}),
+        videoBitsPerSecond: exportFps === 60 ? 8_000_000 : 5_000_000,
+      };
+      let recorder: MediaRecorder;
+      try {
+        recorder = new MediaRecorder(stream, recOptions);
+      } catch {
+        recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      }
       const chunks: Blob[] = [];
       recorder.ondataavailable = (ev) => {
         if (ev.data && ev.data.size > 0) chunks.push(ev.data);
@@ -1211,11 +1225,12 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
   const pickRecorderMime = () => {
     const mimeTypes = [
-      'video/webm;codecs=vp9',
+      'video/webm;codecs=h264',
+      'video/mp4;codecs=avc1',
       'video/webm;codecs=vp8',
       'video/webm',
-      'video/mp4;codecs=avc1',
       'video/mp4',
+      'video/webm;codecs=vp9',
     ];
     return (
       mimeTypes.find((type) => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(type)) || ''
@@ -1226,7 +1241,16 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     if (typeof MediaRecorder === 'undefined') return null;
     try {
       const mimeType = pickRecorderMime();
-      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      const opts: MediaRecorderOptions = {
+        ...(mimeType ? { mimeType } : {}),
+        videoBitsPerSecond: 6_500_000,
+      };
+      let recorder: MediaRecorder;
+      try {
+        recorder = new MediaRecorder(stream, opts);
+      } catch {
+        recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      }
       const slot: RecorderSlot = {
         recorder,
         chunks: [],
@@ -1791,6 +1815,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
             facingMode: { ideal: targetFacing },
             width: { ideal: 1280, min: 640 },
             height: { ideal: 720, min: 480 },
+            frameRate: { ideal: videoTargetFps, min: 30 },
           },
           audio: false,
         });
@@ -1802,6 +1827,8 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       }
 
       mediaStreamRef.current = stream;
+      const trackSettings = stream.getVideoTracks()[0]?.getSettings?.();
+      setActualCameraFps(trackSettings?.frameRate ? Math.round(trackSettings.frameRate) : null);
       setCameraActive(true);
       setFacingMode(targetFacing);
 
@@ -3389,7 +3416,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
               <span>{cameraFit === 'contain' ? 'Celý záběr ↕' : 'Výplň'}</span>
             </button>
 
-            {/* Auto video record toggle */}
+            {/* Auto video record toggle + FPS selector (60 FPS / 30 FPS) */}
             <button
               onClick={() => setRecordVideoOnRun(!recordVideoOnRun)}
               className={`min-h-[38px] px-2.5 sm:px-3 py-1 rounded-xl font-bold transition-all flex items-center gap-1 border ${
@@ -3401,6 +3428,37 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
               <Video className="w-3.5 h-3.5" />
               <span className="hidden xs:inline">{recordVideoOnRun ? 'Záznam: ZAP' : 'Záznam: VYP'}</span>
             </button>
+
+            {recordVideoOnRun && (
+              <button
+                type="button"
+                onClick={async () => {
+                  const nextFps: 30 | 60 = videoTargetFps === 60 ? 30 : 60;
+                  setVideoTargetFps(nextFps);
+                  const track = mediaStreamRef.current?.getVideoTracks?.()[0];
+                  if (track && typeof track.applyConstraints === 'function') {
+                    try {
+                      await track.applyConstraints({ frameRate: { ideal: nextFps, min: 30 } });
+                      const fpsNow = track.getSettings?.().frameRate;
+                      if (fpsNow) setActualCameraFps(Math.round(fpsNow));
+                    } catch {
+                      // ignore if hardware locks fps
+                    }
+                  }
+                }}
+                className={`min-h-[38px] px-2.5 py-1 rounded-xl font-mono font-bold transition-all flex items-center gap-1 border ${
+                  videoTargetFps === 60
+                    ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-300 dark:border-emerald-800'
+                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-transparent'
+                }`}
+                title="Počet snímků za sekundu pro záznam i export (60 FPS pro plynulé zpomalení, 30 FPS pro úsporu výkonu)"
+              >
+                <span>{videoTargetFps} FPS</span>
+                {actualCameraFps && actualCameraFps !== videoTargetFps && (
+                  <span className="text-[10px] opacity-75">({actualCameraFps})</span>
+                )}
+              </button>
+            )}
 
             {/* Fullscreen Camera Expansion (fills screen between TopBar & BottomTabBar) */}
             <button
