@@ -17,7 +17,7 @@ import { LegalModal } from './components/LegalModal';
 import { SettingsModal } from './components/SettingsModal';
 import { AuthModal } from './components/AuthModal';
 import { RouteCategory, SpeedRun } from './types/climbing';
-import { getStoredRuns, getUserProfile, UserProfile } from './utils/storage';
+import { getStoredRuns, getUserProfile, UserProfile, AppSettings, getAppSettings } from './utils/storage';
 import { Language, getStoredLanguage, saveStoredLanguage, TRANSLATIONS } from './utils/i18n';
 
 export default function App() {
@@ -25,6 +25,7 @@ export default function App() {
   const [isDark, setIsDark] = useState<boolean>(true);
   const [lang, setLang] = useState<Language>(getStoredLanguage());
   const [profile, setProfile] = useState<UserProfile>(getUserProfile);
+  const [appSettings, setAppSettings] = useState<AppSettings>(getAppSettings);
   const [currentCategory, setCurrentCategory] = useState<RouteCategory>(
     () => getUserProfile().defaultCategory || 'adults_15m'
   );
@@ -114,6 +115,13 @@ export default function App() {
             onSelectCategory={setCurrentCategory}
             lang={lang}
             userProfile={profile}
+            appSettings={appSettings}
+            onProfileSwitched={(switched) => {
+              setProfile(switched);
+              if (switched.defaultCategory) {
+                setCurrentCategory(switched.defaultCategory);
+              }
+            }}
             onDeleteRun={(runId) => {
               const updated = runs.filter((r) => r.id !== runId);
               handleRunsChanged(updated);
@@ -224,6 +232,8 @@ export default function App() {
               setCurrentCategory(updatedProfile.defaultCategory);
             }
           }}
+          appSettings={appSettings}
+          onAppSettingsChange={setAppSettings}
         />
       )}
     </div>

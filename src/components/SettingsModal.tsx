@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Volume2, VolumeX, Moon, Sun, Globe, Shield, Play, Check, Users, Mic } from 'lucide-react';
+import { Volume2, VolumeX, Moon, Sun, Globe, Shield, Play, Check, Users, Mic, Video, Camera } from 'lucide-react';
 import { Language } from '../utils/i18n';
 import {
   ToneStyle,
@@ -12,7 +12,17 @@ import {
 import { FifteenAppIcon } from './FifteenLogo';
 
 import { RouteCategory } from '../types/climbing';
-import { UserProfile, getUserProfile, saveUserProfile } from '../utils/storage';
+import {
+  UserProfile,
+  getUserProfile,
+  saveUserProfile,
+  AppSettings,
+  getAppSettings,
+  saveAppSettings,
+  VideoTimeOverlayMode,
+  AiSensitivityPreset,
+  DefaultStartMode,
+} from '../utils/storage';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -26,6 +36,8 @@ interface SettingsModalProps {
   currentCategory?: RouteCategory;
   onSelectCategory?: (cat: RouteCategory) => void;
   onProfileUpdated?: (profile: UserProfile) => void;
+  appSettings?: AppSettings;
+  onAppSettingsChange?: (settings: AppSettings) => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -40,10 +52,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   currentCategory,
   onSelectCategory,
   onProfileUpdated,
+  appSettings: externalAppSettings,
+  onAppSettingsChange,
 }) => {
   const [profile, setProfile] = useState<UserProfile>(userProfile || getUserProfile);
   const [audioSettings, setAudioSettings] = useState(getStoredAudioSettings());
+  const [localAppSettings, setLocalAppSettings] = useState<AppSettings>(
+    () => externalAppSettings || getAppSettings()
+  );
   const [isPlayingTest, setIsPlayingTest] = useState(false);
+
+  const updateAppSetting = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
+    setLocalAppSettings((prev) => {
+      const next = { ...prev, [key]: value };
+      saveAppSettings(next);
+      onAppSettingsChange?.(next);
+      return next;
+    });
+  };
 
   const selectedClimberCategory: RouteCategory = profile.defaultCategory || currentCategory || 'adults_15m';
 
@@ -382,6 +408,283 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 : lang === 'cs'
                 ? 'Vypnuto'
                 : 'Off'}
+            </button>
+          </div>
+        </div>
+
+        {/* 3B. Video & Background Export Presets */}
+        <div className="space-y-2.5 pt-2 border-t border-slate-100 dark:border-slate-800">
+          <label className="text-xs font-bold text-slate-600 dark:text-slate-400 flex items-center gap-1.5 uppercase tracking-wider">
+            <Video className="w-3.5 h-3.5 text-red-600" />
+            <span>{lang === 'cs' ? 'Video a ukládání na pozadí' : 'Video & Background Export'}</span>
+          </label>
+
+          {/* Toggle recording on run */}
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <span className="text-slate-600 dark:text-slate-300 font-semibold">
+              {lang === 'cs' ? 'Nahrávat video při výlezu' : 'Record video on climb'}
+            </span>
+            <button
+              type="button"
+              onClick={() => updateAppSetting('recordVideoOnRun', !localAppSettings.recordVideoOnRun)}
+              className={`min-h-[34px] px-3 py-1 rounded-xl font-bold border transition-all ${
+                localAppSettings.recordVideoOnRun
+                  ? 'bg-emerald-600 text-white border-emerald-500'
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-500 border-slate-300 dark:border-slate-700'
+              }`}
+            >
+              {localAppSettings.recordVideoOnRun ? 'Zapnuto' : 'Vypnuto'}
+            </button>
+          </div>
+
+          {/* Time overlay mode inside saved video */}
+          <div className="space-y-1">
+            <span className="text-[11px] text-slate-500 font-semibold block">
+              {lang === 'cs' ? 'Zobrazení času v uloženém videu:' : 'Time overlay in saved video:'}
+            </span>
+            <div className="grid grid-cols-3 gap-1.5 text-[11px] font-bold">
+              {(
+                [
+                  { id: 'running', label: 'Běžící čas' },
+                  { id: 'final', label: 'Jen výsledný čas' },
+                  { id: 'none', label: 'Bez času (ihned)' },
+                ] as { id: VideoTimeOverlayMode; label: string }[]
+              ).map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => updateAppSetting('videoTimeMode', m.id)}
+                  className={`min-h-[38px] px-2 py-1.5 rounded-xl border transition-all ${
+                    localAppSettings.videoTimeMode === m.id
+                      ? 'bg-red-600 text-white border-red-600 shadow-sm'
+                      : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300'
+                  }`}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* FPS & Pre/Post-roll margins */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+            <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold text-slate-500">Snímkování:</span>
+              <div className="flex items-center gap-1">
+                {([60, 30] as (60 | 30)[]).map((fps) => (
+                  <button
+                    key={fps}
+                    type="button"
+                    onClick={() => updateAppSetting('videoFps', fps)}
+                    className={`px-2.5 py-1 rounded-lg font-mono font-bold transition-all ${
+                      localAppSettings.videoFps === fps
+                        ? 'bg-red-600 text-white'
+                        : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+                    }`}
+                  >
+                    {fps} FPS
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold text-slate-500">Okraj ±s:</span>
+              <div className="flex items-center gap-1">
+                {([3, 1, 0] as (3 | 1 | 0)[]).map((sec) => (
+                  <button
+                    key={sec}
+                    type="button"
+                    onClick={() => updateAppSetting('videoTrimMarginSec', sec)}
+                    className={`px-2 py-1 rounded-lg font-mono font-bold transition-all ${
+                      localAppSettings.videoTrimMarginSec === sec
+                        ? 'bg-red-600 text-white'
+                        : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+                    }`}
+                  >
+                    {sec === 0 ? '0s' : `±${sec}s`}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* AI dots in video + Auto-save toggle */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+            <button
+              type="button"
+              onClick={() => updateAppSetting('includePoseInVideo', !localAppSettings.includePoseInVideo)}
+              className={`p-2.5 rounded-xl border text-left flex items-center justify-between gap-2 transition-all ${
+                localAppSettings.includePoseInVideo
+                  ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-500 text-emerald-700 dark:text-emerald-300 font-bold'
+                  : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 font-semibold'
+              }`}
+            >
+              <span className="text-[11px]">AI body (ruka/tělo/noha)</span>
+              <span className="text-[10px] font-black">{localAppSettings.includePoseInVideo ? 'ZAP' : 'VYP'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => updateAppSetting('autoSaveVideoOnFinish', !localAppSettings.autoSaveVideoOnFinish)}
+              className={`p-2.5 rounded-xl border text-left flex items-center justify-between gap-2 transition-all ${
+                localAppSettings.autoSaveVideoOnFinish
+                  ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-500 text-emerald-700 dark:text-emerald-300 font-bold'
+                  : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 font-semibold'
+              }`}
+            >
+              <span className="text-[11px]">Auto-uložit po doběhu</span>
+              <span className="text-[10px] font-black">{localAppSettings.autoSaveVideoOnFinish ? 'ZAP' : 'VYP'}</span>
+            </button>
+          </div>
+        </div>
+
+        {/* 3C. AI Camera, Start Mode & Display Presets */}
+        <div className="space-y-2.5 pt-2 border-t border-slate-100 dark:border-slate-800">
+          <label className="text-xs font-bold text-slate-600 dark:text-slate-400 flex items-center gap-1.5 uppercase tracking-wider">
+            <Camera className="w-3.5 h-3.5 text-red-600" />
+            <span>{lang === 'cs' ? 'AI Kamera a rozhraní' : 'AI Camera & Display'}</span>
+          </label>
+
+          {/* Default start mode */}
+          <div className="space-y-1">
+            <span className="text-[11px] text-slate-500 font-semibold block">Výchozí režim startu:</span>
+            <div className="grid grid-cols-4 gap-1 text-[11px] font-bold">
+              {(
+                [
+                  { id: 'manual', label: 'Ruční' },
+                  { id: 'ifsc_countdown', label: 'Pípnutí' },
+                  { id: 'camera_motion', label: 'AI Kamera' },
+                  { id: 'sound_trigger', label: 'AI Zvuk' },
+                ] as { id: DefaultStartMode; label: string }[]
+              ).map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => updateAppSetting('defaultStartMode', m.id)}
+                  className={`min-h-[36px] px-1.5 py-1 rounded-xl border transition-all ${
+                    localAppSettings.defaultStartMode === m.id
+                      ? 'bg-red-600 text-white border-red-600 shadow-sm'
+                      : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300'
+                  }`}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Sensitivity + Camera Fit */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+            <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold text-slate-500">Citlivost AI:</span>
+              <div className="flex items-center gap-1">
+                {(
+                  [
+                    { id: 'low', label: 'Níz.' },
+                    { id: 'medium', label: 'Stř.' },
+                    { id: 'high', label: 'Vys.' },
+                  ] as { id: AiSensitivityPreset; label: string }[]
+                ).map((s) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onClick={() => updateAppSetting('sensitivityPreset', s.id)}
+                    className={`px-2 py-1 rounded-lg font-bold transition-all ${
+                      localAppSettings.sensitivityPreset === s.id
+                        ? 'bg-red-600 text-white'
+                        : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+                    }`}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold text-slate-500">Hledáček:</span>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => updateAppSetting('cameraFit', 'contain')}
+                  className={`px-2 py-1 rounded-lg font-bold transition-all ${
+                    localAppSettings.cameraFit === 'contain'
+                      ? 'bg-red-600 text-white'
+                      : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+                  }`}
+                >
+                  Celý ↕
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateAppSetting('cameraFit', 'cover')}
+                  className={`px-2 py-1 rounded-lg font-bold transition-all ${
+                    localAppSettings.cameraFit === 'cover'
+                      ? 'bg-red-600 text-white'
+                      : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+                  }`}
+                >
+                  Výplň
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <button
+              type="button"
+              onClick={() => updateAppSetting('ifscStartWithCamera', !localAppSettings.ifscStartWithCamera)}
+              className={`p-2.5 rounded-xl border text-left flex items-center justify-between gap-2 transition-all ${
+                localAppSettings.ifscStartWithCamera
+                  ? 'bg-amber-50 dark:bg-amber-950/30 border-amber-500 text-amber-700 dark:text-amber-300 font-bold'
+                  : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 font-semibold'
+              }`}
+            >
+              <span className="text-[11px]">IFSC start v AI kameře</span>
+              <span className="text-[10px] font-black">{localAppSettings.ifscStartWithCamera ? 'ZAP' : 'VYP'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => updateAppSetting('showGuides', !localAppSettings.showGuides)}
+              className={`p-2.5 rounded-xl border text-left flex items-center justify-between gap-2 transition-all ${
+                localAppSettings.showGuides
+                  ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-500 text-emerald-700 dark:text-emerald-300 font-bold'
+                  : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 font-semibold'
+              }`}
+            >
+              <span className="text-[11px]">Vodicí linie stěny</span>
+              <span className="text-[10px] font-black">{localAppSettings.showGuides ? 'ZAP' : 'VYP'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                updateAppSetting(
+                  'defaultFacingMode',
+                  localAppSettings.defaultFacingMode === 'environment' ? 'user' : 'environment'
+                )
+              }
+              className="p-2.5 rounded-xl border bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 font-semibold text-left flex items-center justify-between gap-2"
+            >
+              <span className="text-[11px]">Výchozí kamera</span>
+              <span className="text-[10px] font-black">
+                {localAppSettings.defaultFacingMode === 'environment' ? 'Zadní' : 'Přední'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => updateAppSetting('showTimerHints', !localAppSettings.showTimerHints)}
+              className={`p-2.5 rounded-xl border text-left flex items-center justify-between gap-2 transition-all ${
+                localAppSettings.showTimerHints
+                  ? 'bg-slate-100 dark:bg-slate-800 border-slate-300 dark:border-slate-700 text-slate-800 dark:text-white font-bold'
+                  : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-500 font-semibold'
+              }`}
+            >
+              <span className="text-[11px]">Nápověda pod kamerou</span>
+              <span className="text-[10px] font-black">{localAppSettings.showTimerHints ? 'ZAP' : 'VYP'}</span>
             </button>
           </div>
         </div>

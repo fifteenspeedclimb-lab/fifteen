@@ -35,7 +35,11 @@ import {
   ArrowDown,
   Lock,
   Unlock,
-  Zap
+  Zap,
+  Users,
+  ChevronDown,
+  UserPlus,
+  Loader2
 } from 'lucide-react';
 import {
   playIFSCPrepTone,
@@ -53,7 +57,21 @@ import {
   VideoCalibrationLines,
   RecordedPoseSample,
 } from '../types/climbing';
-import { saveRun, getUserProfile, updateRunVideo, removeRunVideo, deleteRun, UserProfile } from '../utils/storage';
+import {
+  saveRun,
+  getStoredRuns,
+  getUserProfile,
+  getAllProfiles,
+  setActiveProfileId,
+  createProfile,
+  updateRunVideo,
+  removeRunVideo,
+  deleteRun,
+  UserProfile,
+  AppSettings,
+  VideoTimeOverlayMode,
+  getAppSettings,
+} from '../utils/storage';
 import { ROUTE_DEFINITIONS } from '../data/speedWallData';
 import { Language, TRANSLATIONS } from '../utils/i18n';
 
@@ -75,18 +93,6 @@ export const DEFAULT_CATEGORY_CALIBRATIONS: Record<RouteCategory, CategoryCalibr
 
 const CALIBRATION_STORAGE_KEY = 'fifteen_zone_calibrations_v3';
 const SCANNED_SOUND_STORAGE_KEY = 'fifteen_scanned_sound_profile_v1';
-const AI_CAM_IFSC_STORAGE_KEY = 'fifteen_ai_cam_ifsc_v1';
-
-const getStoredAiCamIfscEnabled = (): boolean => {
-  try {
-    const raw = localStorage.getItem(AI_CAM_IFSC_STORAGE_KEY);
-    if (raw === '0' || raw === 'false') return false;
-    if (raw === '1' || raw === 'true') return true;
-  } catch {
-    // ignore
-  }
-  return true;
-};
 
 export interface ScannedSoundProfile {
   ambientRms: number;
@@ -157,6 +163,8 @@ interface SmartTimerProps {
   onSelectCategory: (cat: RouteCategory) => void;
   lang: Language;
   userProfile?: UserProfile;
+  appSettings?: AppSettings;
+  onProfileSwitched?: (profile: UserProfile) => void;
   onDeleteRun?: (runId: string) => void;
 }
 
@@ -217,17 +225,38 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   onSelectCategory,
   lang,
   userProfile,
+  appSettings,
+  onProfileSwitched,
   onDeleteRun,
 }) => {
   const profile = userProfile || getUserProfile();
+  const effectiveSettings = appSettings || getAppSettings();
   const t = TRANSLATIONS[lang];
   const routeDef = ROUTE_DEFINITIONS[currentCategory];
+
+  // Unified Pre-configured Settings (controlled from SettingsModal)
+  const recordVideoOnRun = effectiveSettings.recordVideoOnRun;
+  const videoTargetFps = effectiveSettings.videoFps;
+  const includePoseInVideo = effectiveSettings.includePoseInVideo;
+  const videoTimeMode = effectiveSettings.videoTimeMode;
+  const videoTrimMarginSec = effectiveSettings.videoTrimMarginSec;
+  const autoSaveVideoOnFinish = effectiveSettings.autoSaveVideoOnFinish;
+  const ifscStartWithCamera = effectiveSettings.ifscStartWithCamera;
+  const sensitivityPreset = effectiveSettings.sensitivityPreset;
+  const showGuides = effectiveSettings.showGuides;
+  const cameraFit = effectiveSettings.cameraFit;
+  const showTimerHints = effectiveSettings.showTimerHints;
+
+  // Quick 1-Tap Climber Switcher
+  const [climberProfiles, setClimberProfiles] = useState<UserProfile[]>(getAllProfiles);
+  const [showClimberSwitcher, setShowClimberSwitcher] = useState<boolean>(false);
+  const [newClimberName, setNewClimberName] = useState<string>('');
 
   // Timer states
   const [isRunning, setIsRunning] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [countdownState, setCountdownState] = useState<CountdownState>('idle');
-  const [startMode, setStartMode] = useState<StartMode>('manual');
+  const [startMode, setStartMode] = useState<StartMode>(() => effectiveSettings.defaultStartMode);
 
   // Splits & Reaction
   const [split1Time, setSplit1Time] = useState<number | null>(null);
@@ -236,13 +265,11 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const [isFalseStart, setIsFalseStart] = useState<boolean>(false);
   const [falseStartReason, setFalseStartReason] = useState<string | null>(null);
   const [finishedRun, setFinishedRun] = useState<SpeedRun | null>(null);
-  const [ifscStartWithCamera, setIfscStartWithCamera] = useState<boolean>(getStoredAiCamIfscEnabled);
 
   // Active Camera & Video Recording
   const [cameraActive, setCameraActive] = useState<boolean>(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
-  const [facingMode, setFacingMode] = useState<'environment' | 'user'>('environment');
-  const [recordVideoOnRun, setRecordVideoOnRun] = useState<boolean>(true);
+  const [facingMode, setFacingMode] = useState<'environment' | 'user'>(() => effectiveSettings.defaultFacingMode);
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [recordedVideoUrl, setRecordedVideoUrl] = useState<string | null>(null);
   const [videoPlaybackRate, setVideoPlaybackRate] = useState<number>(1.0);
@@ -252,8 +279,6 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const [showDeleteRunConfirm, setShowDeleteRunConfirm] = useState<boolean>(false);
 
   // Viewfinder & Positioning Helpers (only active in AI Kamera mode)
-  const [showGuides, setShowGuides] = useState<boolean>(true);
-  const [cameraFit, setCameraFit] = useState<'contain' | 'cover'>('contain');
   const [isCameraExpanded, setIsCameraExpanded] = useState<boolean>(false);
   const [gestureToast, setGestureToast] = useState<string | null>(null);
   const [swipePreview, setSwipePreview] = useState<
@@ -276,15 +301,29 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const [editingLine, setEditingLine] = useState<'foot' | 'split1' | 'split2' | 'hand' | null>(null);
   const [draggingLine, setDraggingLine] = useState<'foot' | 'split1' | 'split2' | 'hand' | null>(null);
 
-  // Video saving feedback & modal state
+  // Video saving feedback & background queue state
   const [videoShareFeedback, setVideoShareFeedback] = useState<string | null>(null);
   const [showCloudPicker, setShowCloudPicker] = useState<boolean>(false);
-  const [isExportingVideo, setIsExportingVideo] = useState<boolean>(false);
-  const [includePoseInVideo, setIncludePoseInVideo] = useState<boolean>(false);
-  const [videoTargetFps, setVideoTargetFps] = useState<30 | 60>(60);
   const [actualCameraFps, setActualCameraFps] = useState<number | null>(null);
   const [isPostRollRecording, setIsPostRollRecording] = useState<boolean>(false);
   const [postRollRemainingSec, setPostRollRemainingSec] = useState<number>(0);
+  const [bgExportUi, setBgExportUi] = useState<{
+    pendingCount: number;
+    activeLabel: string | null;
+    finishedToast: string | null;
+    readyShareJob: {
+      id: string;
+      filename: string;
+      blob: Blob;
+      mimeType: string;
+      run: SpeedRun;
+    } | null;
+  }>({
+    pendingCount: 0,
+    activeLabel: null,
+    finishedToast: null,
+    readyShareJob: null,
+  });
   const [videoBoxRect, setVideoBoxRect] = useState<{ left: number; top: number; width: number; height: number }>({
     left: 0,
     top: 0,
@@ -301,31 +340,58 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const [wallBgReady, setWallBgReady] = useState<boolean>(false);
   const [lastLineTrigger, setLastLineTrigger] = useState<'start' | 'split1' | 'split2' | 'finish' | null>(null);
 
-  // Sensitivity Presets: low = strict, medium = balanced, high = sensitive
-  const [sensitivityPreset, setSensitivityPreset] = useState<'low' | 'medium' | 'high'>('medium');
   const soundThreshold = sensitivityPreset === 'low' ? 62 : sensitivityPreset === 'high' ? 32 : 46;
 
   const categoryName = lang === 'cs' ? routeDef.nameCs : lang === 'de' ? routeDef.nameDe : routeDef.nameEn;
   const isYouthCategory = currentCategory === 'youth_u15' || currentCategory === 'youth_u13';
   const isAiCameraMode = startMode === 'camera_motion';
 
-  const toggleIfscStartWithCamera = () => {
-    setIfscStartWithCamera((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem(AI_CAM_IFSC_STORAGE_KEY, next ? '1' : '0');
-      } catch {
-        // ignore
-      }
-      setCalibrationSavedToast(
-        next
-          ? '⚡ IFSC odpočet + detekce reakce ZAPNUTA'
-          : 'Kamera poběží v okamžitém režimu (IFSC odpočet VYPNUT)'
-      );
+  // Refresh saved climber profiles whenever userProfile changes
+  useEffect(() => {
+    setClimberProfiles(getAllProfiles());
+  }, [userProfile]);
+
+  // Sync defaultStartMode / defaultFacingMode when changed in SettingsModal
+  useEffect(() => {
+    setStartMode(effectiveSettings.defaultStartMode);
+  }, [effectiveSettings.defaultStartMode]);
+
+  useEffect(() => {
+    if (!cameraActive) {
+      setFacingMode(effectiveSettings.defaultFacingMode);
+    }
+  }, [effectiveSettings.defaultFacingMode, cameraActive]);
+
+  const handleSwitchClimber = useCallback(
+    (targetId: string) => {
+      const switched = setActiveProfileId(targetId);
+      setClimberProfiles(getAllProfiles());
+      setShowClimberSwitcher(false);
+      onProfileSwitched?.(switched);
+      setCalibrationSavedToast(`🧗 Lezec: ${switched.flagEmoji || ''} ${switched.name}`);
+      setTimeout(() => setCalibrationSavedToast(null), 2000);
+    },
+    [onProfileSwitched]
+  );
+
+  const handleQuickCreateClimber = useCallback(
+    (e: React.FormEvent) => {
+      e.preventDefault();
+      const trimmed = newClimberName.trim();
+      if (!trimmed) return;
+      const created = createProfile({
+        name: trimmed,
+        defaultCategory: currentCategory,
+      });
+      setNewClimberName('');
+      setClimberProfiles(getAllProfiles());
+      setShowClimberSwitcher(false);
+      onProfileSwitched?.(created);
+      setCalibrationSavedToast(`✓ Přidán a přepnut: ${created.name}`);
       setTimeout(() => setCalibrationSavedToast(null), 2200);
-      return next;
-    });
-  };
+    },
+    [newClimberName, currentCategory, onProfileSwitched]
+  );
 
   // Calibration updater methods
   const updateCalibrationField = <K extends keyof CategoryCalibration>(field: K, val: CategoryCalibration[K]) => {
@@ -689,22 +755,51 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     []
   );
 
-  // Burn live running timer + trimmed [start-3s .. finish+3s] + optional AI pose overlay into exported video
+  // Burn timer overlay ('running' | 'final' | 'none') + trimmed margins + optional AI pose overlay into exported video
+  // IMPORTANT: Never pauses live camera so the next climber can immediately start while this encodes in the background.
   const getAnnotatedVideoBlob = async (
     run: SpeedRun,
-    withPoseOverlay: boolean = includePoseInVideo
+    options?: {
+      withPoseOverlay?: boolean;
+      videoTimeMode?: VideoTimeOverlayMode;
+      exportFps?: 30 | 60;
+      trimMarginSec?: 0 | 1 | 3;
+    }
   ): Promise<{ blob: Blob; ext: string; mimeType: string } | null> => {
-    if (!run.videoUrl) return null;
     const savedMem = recordedPoseDataMapRef.current.get(run.id);
+    const resolvedVideoUrl = run.videoUrl || savedMem?.videoUrl;
+    if (!resolvedVideoUrl) return null;
+
     const timing = run.videoTiming || savedMem?.timing;
     const calLines = run.videoCalibration || savedMem?.calibration;
     const poseTimeline = run.poseTimeline || savedMem?.poseTimeline;
-    const hasPoseData = Boolean(withPoseOverlay && poseTimeline && poseTimeline.length > 0);
-    const exportFps = videoTargetFps;
 
-    const cacheKey = `${run.id}_v5_${exportFps}fps_${hasPoseData ? 'pose' : 'clean'}_${run.totalTime.toFixed(3)}`;
+    const withPoseOverlay = options?.withPoseOverlay ?? includePoseInVideo;
+    const mode: VideoTimeOverlayMode = options?.videoTimeMode ?? videoTimeMode;
+    const exportFps = options?.exportFps ?? videoTargetFps;
+    const hasPoseData = Boolean(withPoseOverlay && poseTimeline && poseTimeline.length > 0);
+
+    const cacheKey = `${run.id}_v6_${exportFps}fps_${mode}_${hasPoseData ? 'pose' : 'clean'}_${run.totalTime.toFixed(3)}`;
     if (exportedVideoCacheRef.current?.key === cacheKey) {
       return exportedVideoCacheRef.current.result;
+    }
+
+    const fallbackRawBlob = async () => {
+      try {
+        const resp = await fetch(resolvedVideoUrl);
+        const raw = await resp.blob();
+        const ext = (raw.type || '').includes('mp4') ? 'mp4' : 'webm';
+        const res = { blob: raw, ext, mimeType: raw.type || 'video/webm' };
+        exportedVideoCacheRef.current = { key: cacheKey, result: res };
+        return res;
+      } catch {
+        return null;
+      }
+    };
+
+    // Instant <50ms save when no timer overlay and no AI pose dots are requested
+    if (mode === 'none' && !hasPoseData) {
+      return fallbackRawBlob();
     }
 
     const runRouteLabel =
@@ -720,43 +815,16 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
     const maxTimeReference = formatVideoTime(run.totalTime);
 
-    const fallbackRawBlob = async () => {
-      try {
-        const resp = await fetch(run.videoUrl!);
-        const raw = await resp.blob();
-        const ext = (raw.type || '').includes('mp4') ? 'mp4' : 'webm';
-        return { blob: raw, ext, mimeType: raw.type || 'video/webm' };
-      } catch {
-        return null;
-      }
-    };
-
     if (typeof document === 'undefined' || typeof MediaRecorder === 'undefined') {
       return fallbackRawBlob();
     }
 
-    // Pause background AI detection, live camera video, and idle pre-roll recorders during export
-    // so hardware encoder/decoder resources aren't starved by parallel work
+    // Only gently throttle idle background AI detection during export (live camera stays running!)
     isExportingVideoRef.current = true;
-    const liveVideo = videoRef.current;
-    const wasLivePlaying = Boolean(liveVideo && !liveVideo.paused);
-    if (liveVideo && wasLivePlaying) {
-      try {
-        liveVideo.pause();
-      } catch {
-        // ignore
-      }
-    }
-    if (!sensorStateRef.current.isRunning && !postRollActiveRef.current) {
-      discardRecorderSlot(primaryRecSlotRef.current);
-      discardRecorderSlot(standbyRecSlotRef.current);
-      primaryRecSlotRef.current = null;
-      standbyRecSlotRef.current = null;
-    }
 
     try {
       const offscreenVideo = document.createElement('video');
-      offscreenVideo.src = run.videoUrl;
+      offscreenVideo.src = resolvedVideoUrl;
       offscreenVideo.muted = true;
       offscreenVideo.playsInline = true;
       offscreenVideo.preload = 'auto';
@@ -774,10 +842,10 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         offscreenVideo.load();
       });
 
-      // Seek to pre-roll start (3s before crossing green start line) if supported
-      const vidDurLimit = Number.isFinite(offscreenVideo.duration) && offscreenVideo.duration > 0.4
-        ? offscreenVideo.duration - 0.3
-        : Number.POSITIVE_INFINITY;
+      const vidDurLimit =
+        Number.isFinite(offscreenVideo.duration) && offscreenVideo.duration > 0.4
+          ? offscreenVideo.duration - 0.3
+          : Number.POSITIVE_INFINITY;
       const trimStartSec = timing ? Math.max(0, Math.min(timing.preRollStartSec, vidDurLimit)) : 0;
       const trimEndSec = timing ? timing.postRollEndSec : Number.POSITIVE_INFINITY;
       if (trimStartSec > 0.12) {
@@ -805,15 +873,12 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       const exportCanvas = document.createElement('canvas');
       exportCanvas.width = W;
       exportCanvas.height = H;
-      // Avoid desynchronized:true here so captureStream always reads complete, synchronized frames
       const ctx = exportCanvas.getContext('2d', { alpha: false });
 
       if (!ctx || typeof exportCanvas.captureStream !== 'function') {
         return fallbackRawBlob();
       }
 
-      // Probe manual frame-push support: captureStream(0) + videoTrack.requestFrame()
-      // prevents async timer beat-jitter (duplicated/skipped frames)
       let stream = exportCanvas.captureStream(0);
       let videoTrack = stream.getVideoTracks()[0] as (MediaStreamTrack & { requestFrame?: () => void }) | undefined;
       const supportsManualFrame = typeof videoTrack?.requestFrame === 'function';
@@ -823,7 +888,6 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         videoTrack = stream.getVideoTracks()[0] as (MediaStreamTrack & { requestFrame?: () => void }) | undefined;
       }
 
-      // Prefer native MP4/AVC or fast VP8 over Chromium's WebM+H264 (which often causes playback judder)
       const mimeTypes = [
         'video/mp4;codecs=avc1',
         'video/mp4',
@@ -848,7 +912,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         if (ev.data && ev.data.size > 0) chunks.push(ev.data);
       };
 
-      // Pre-compute static HUD dimensions once instead of measuring text on every exported frame
+      // Pre-compute static HUD dimensions
       const minDim = Math.min(W, H);
       const padX = Math.round(W * 0.03);
       const padY = Math.round(H * 0.035);
@@ -878,11 +942,11 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         pyPct: number,
         color: string,
         labelText: string,
-        minDim: number
+        minD: number
       ) => {
         const cx = (pxPct / 100) * W;
         const cy = (pyPct / 100) * H;
-        const r = Math.max(5, Math.round(minDim * 0.011));
+        const r = Math.max(5, Math.round(minD * 0.011));
 
         ctx.save();
         ctx.beginPath();
@@ -895,7 +959,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         ctx.fillStyle = color;
         ctx.fill();
 
-        const fontSize = Math.max(10, Math.round(minDim * 0.02));
+        const fontSize = Math.max(10, Math.round(minD * 0.02));
         ctx.font = `800 ${fontSize}px system-ui, -apple-system, sans-serif`;
         const tw = ctx.measureText(labelText).width;
         const px = 6;
@@ -924,7 +988,6 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
             ? frameMediaTime
             : offscreenVideo.currentTime || 0;
 
-        // Optional AI Pose Tracking Overlay (Hand, Body, Foot + Skeleton + Trigger Lines)
         if (hasPoseData) {
           if (calLines) {
             const lines: { yPct: number; color: string }[] = [
@@ -974,43 +1037,48 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
           }
         }
 
-        // Compute aligned chrono readout (00.000s during pre-roll, live climb, locked finish during post-roll)
-        let currentRunSec = vidTime;
-        let isPreStart = false;
-        let isFinishedFrame = forceFinal;
-
-        if (timing) {
-          if (forceFinal || vidTime >= timing.climbEndSec) {
-            currentRunSec = run.totalTime;
-            isFinishedFrame = true;
-          } else if (vidTime < timing.climbStartSec) {
-            currentRunSec = 0;
-            isPreStart = true;
-            isFinishedFrame = false;
-          } else {
-            const climbSpan = Math.max(0.05, timing.climbEndSec - timing.climbStartSec);
-            currentRunSec = ((vidTime - timing.climbStartSec) / climbSpan) * run.totalTime;
-            isFinishedFrame = currentRunSec >= run.totalTime - 0.012;
-          }
-        } else {
-          const vidDur = offscreenVideo.duration;
-          if (forceFinal) {
-            currentRunSec = run.totalTime;
-          } else if (Number.isFinite(vidDur) && vidDur > 0.25 && vidDur < run.totalTime) {
-            currentRunSec = (currentRunSec / vidDur) * run.totalTime;
-          }
-          isFinishedFrame = forceFinal || currentRunSec >= run.totalTime - 0.012;
+        if (mode === 'none') {
+          return;
         }
 
-        const displaySec = Math.min(run.totalTime, Math.max(0, currentRunSec));
-        const timeText = isFinishedFrame ? maxTimeReference : formatVideoTime(displaySec);
+        let isPreStart = false;
+        let isFinishedFrame = mode === 'final' || forceFinal;
+        let timeText = maxTimeReference;
+
+        if (mode === 'running') {
+          let currentRunSec = vidTime;
+          if (timing) {
+            if (forceFinal || vidTime >= timing.climbEndSec) {
+              currentRunSec = run.totalTime;
+              isFinishedFrame = true;
+            } else if (vidTime < timing.climbStartSec) {
+              currentRunSec = 0;
+              isPreStart = true;
+              isFinishedFrame = false;
+            } else {
+              const climbSpan = Math.max(0.05, timing.climbEndSec - timing.climbStartSec);
+              currentRunSec = ((vidTime - timing.climbStartSec) / climbSpan) * run.totalTime;
+              isFinishedFrame = currentRunSec >= run.totalTime - 0.012;
+            }
+          } else {
+            const vidDur = offscreenVideo.duration;
+            if (forceFinal) {
+              currentRunSec = run.totalTime;
+            } else if (Number.isFinite(vidDur) && vidDur > 0.25 && vidDur < run.totalTime) {
+              currentRunSec = (currentRunSec / vidDur) * run.totalTime;
+            }
+            isFinishedFrame = forceFinal || currentRunSec >= run.totalTime - 0.012;
+          }
+          const displaySec = Math.min(run.totalTime, Math.max(0, currentRunSec));
+          timeText = isFinishedFrame ? maxTimeReference : formatVideoTime(displaySec);
+        }
+
         const topLabel = isFinishedFrame
           ? `${baseClimberLabel} · CÍL`
           : isPreStart
           ? `${baseClimberLabel} · START`
           : baseClimberLabel;
 
-        // Top-right live chrono badge (using pre-computed box layout)
         ctx.save();
         ctx.fillStyle = 'rgba(9, 13, 24, 0.84)';
         ctx.strokeStyle = isFinishedFrame
@@ -1117,12 +1185,11 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         };
 
         const handleDecodedFrame = (tNow: number) => {
-          if (stopped) return;
+          if (stopped) return false;
 
           if (!recordingStarted && tNow >= Math.max(0, trimStartSec - 0.12)) {
             recordingStarted = true;
             try {
-              // Start WITHOUT 100ms timeslice so MediaRecorder doesn't stall every 100ms flushing clusters
               recorder.start();
             } catch {
               // ignore
@@ -1158,7 +1225,6 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         const rafLoop = () => {
           if (stopped) return;
           const tNow = offscreenVideo.currentTime || 0;
-          // Only draw & push when the decoded video timestamp actually advanced (avoids duplicate-frame stutter)
           if (tNow > lastDrawnMediaTime + 0.001 || !recordingStarted) {
             lastDrawnMediaTime = tNow;
             if (handleDecodedFrame(tNow)) return;
@@ -1182,7 +1248,6 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
           setTimeout(finishExport, 180);
         };
 
-        // Pre-render first frame onto canvas before play starts
         drawWatermarkFrame(false, offscreenVideo.currentTime || trimStartSec);
 
         if (hasRVFC && vidWithRvfc.requestVideoFrameCallback) {
@@ -1213,79 +1278,269 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       return fallbackRawBlob();
     } finally {
       isExportingVideoRef.current = false;
-      if (liveVideo && wasLivePlaying && cameraActive) {
-        liveVideo.play().catch(() => {});
-      }
     }
   };
 
-  // Wait if the 3s post-roll capture is still finishing before saving/exporting
-  const waitForPostRollIfNeeded = async () => {
-    if (postRollPromiseRef.current) {
-      setVideoShareFeedback('Dokončuji 3s záznamu po dohmatu...');
-      await postRollPromiseRef.current;
-    }
+  const triggerBlobDownload = (blob: Blob, filename: string) => {
+    const downloadUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(downloadUrl), 4000);
   };
 
-  // Video saving handlers (Device download vs Cloud sharing) with burned-in top-right running timer + optional AI dots
-  const handleDownloadVideoDirect = async (runOverride?: SpeedRun) => {
-    await waitForPostRollIfNeeded();
-    const targetRun = runOverride || finishedRunRef.current;
-    if (!targetRun?.videoUrl || isExportingVideo) return;
-    setIsExportingVideo(true);
-    setVideoShareFeedback(
-      includePoseInVideo
-        ? 'Vypisuji časomíru a AI sledování (ruka/tělo/noha) do videa...'
-        : 'Vypisuji běžící časomíru do pravého horního rohu videa...'
-    );
+  const processExportQueue = useCallback(async () => {
+    if (isProcessingQueueRef.current) return;
+    isProcessingQueueRef.current = true;
+
     try {
-      const exported = await getAnnotatedVideoBlob(targetRun, includePoseInVideo);
-      if (!exported) return;
-      const downloadUrl = URL.createObjectURL(exported.blob);
-      const link = document.createElement('a');
-      link.href = downloadUrl;
-      link.download = buildVideoFilename(targetRun, exported.ext);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      setTimeout(() => URL.revokeObjectURL(downloadUrl), 4000);
-      setVideoShareFeedback(`Video ${buildVideoFilename(targetRun, exported.ext)} bylo staženo!`);
-      setTimeout(() => setVideoShareFeedback(null), 4000);
-    } finally {
-      setIsExportingVideo(false);
-    }
-  };
+      while (exportQueueRef.current.length > 0) {
+        const job = exportQueueRef.current.shift()!;
+        activeExportRunIdRef.current = job.run.id;
+        const jobLabel = `${job.run.climberName || 'Lezec'} (${job.run.totalTime.toFixed(3)}s)`;
+        setBgExportUi((prev) => ({
+          ...prev,
+          pendingCount: exportQueueRef.current.length + 1,
+          activeLabel: jobLabel,
+        }));
 
-  const handleShareVideoToCloud = async () => {
-    await waitForPostRollIfNeeded();
-    const targetRun = finishedRunRef.current;
-    if (!targetRun?.videoUrl || isExportingVideo) return;
-    setIsExportingVideo(true);
-    setVideoShareFeedback('Připravuji video s běžícím časem pro uložení...');
-    try {
-      const exported = await getAnnotatedVideoBlob(targetRun, includePoseInVideo);
-      if (exported) {
-        const filename = buildVideoFilename(targetRun, exported.ext);
-        const file = new File([exported.blob], filename, { type: exported.mimeType });
+        try {
+          const pendingPostRoll = postRollPromisesByRunRef.current.get(job.run.id);
+          if (pendingPostRoll) {
+            await pendingPostRoll;
+          }
 
-        if (typeof navigator !== 'undefined' && navigator.canShare && navigator.canShare({ files: [file] })) {
-          await navigator.share({
-            files: [file],
-            title: `Fifteen Speed Climbing - ${targetRun.totalTime.toFixed(3)}s`,
-            text: `Můj výlez v čase ${targetRun.totalTime.toFixed(3)}s na trase ${categoryName}`,
+          const mem = recordedPoseDataMapRef.current.get(job.run.id);
+          const resolvedRun: SpeedRun = mem
+            ? {
+                ...job.run,
+                videoUrl: job.run.videoUrl || mem.videoUrl,
+                videoTiming: job.run.videoTiming || mem.timing,
+                videoCalibration: job.run.videoCalibration || mem.calibration,
+                poseTimeline: job.run.poseTimeline || mem.poseTimeline,
+              }
+            : job.run;
+
+          if (!resolvedRun.videoUrl) {
+            setBgExportUi((prev) => ({
+              ...prev,
+              finishedToast: `✓ Pokus ${jobLabel} uložen`,
+            }));
+            setTimeout(() => {
+              setBgExportUi((prev) =>
+                prev.finishedToast?.includes(jobLabel) ? { ...prev, finishedToast: null } : prev
+              );
+            }, 2800);
+            continue;
+          }
+
+          const exported = await getAnnotatedVideoBlob(resolvedRun, {
+            withPoseOverlay: job.withPose,
+            videoTimeMode: job.videoTimeMode,
+            exportFps: job.exportFps,
+            trimMarginSec: job.trimMarginSec,
           });
-          setVideoShareFeedback('Odesláno přes systémové sdílení!');
-          setTimeout(() => setVideoShareFeedback(null), 3500);
-          return;
+
+          if (!exported) continue;
+          const filename = buildVideoFilename(resolvedRun, exported.ext);
+
+          if (job.action === 'download') {
+            triggerBlobDownload(exported.blob, filename);
+            setBgExportUi((prev) => ({
+              ...prev,
+              finishedToast: `✓ Uloženo na pozadí: ${filename}`,
+            }));
+            setTimeout(() => {
+              setBgExportUi((prev) =>
+                prev.finishedToast?.includes(filename) ? { ...prev, finishedToast: null } : prev
+              );
+            }, 3400);
+          } else {
+            const file = new File([exported.blob], filename, { type: exported.mimeType });
+            let sharedOk = false;
+            if (typeof navigator !== 'undefined' && navigator.canShare && navigator.canShare({ files: [file] })) {
+              try {
+                await navigator.share({
+                  files: [file],
+                  title: `Fifteen Speed Climbing - ${resolvedRun.totalTime.toFixed(3)}s`,
+                  text: `Výlez ${resolvedRun.climberName || 'lezce'} v čase ${resolvedRun.totalTime.toFixed(3)}s`,
+                });
+                sharedOk = true;
+              } catch {
+                sharedOk = false;
+              }
+            }
+
+            if (sharedOk) {
+              setBgExportUi((prev) => ({
+                ...prev,
+                finishedToast: `☁️ Odesláno na Disk: ${filename}`,
+              }));
+              setTimeout(() => {
+                setBgExportUi((prev) =>
+                  prev.finishedToast?.includes(filename) ? { ...prev, finishedToast: null } : prev
+                );
+              }, 3400);
+            } else {
+              // User gesture likely expired during async encoding — keep ready for 1-tap share or download
+              setBgExportUi((prev) => ({
+                ...prev,
+                readyShareJob: {
+                  id: job.id,
+                  filename,
+                  blob: exported.blob,
+                  mimeType: exported.mimeType,
+                  run: resolvedRun,
+                },
+              }));
+            }
+          }
+        } finally {
+          activeExportRunIdRef.current = null;
         }
       }
-    } catch {
-      // share dismissed or unsupported
     } finally {
-      setIsExportingVideo(false);
+      isProcessingQueueRef.current = false;
+      activeExportRunIdRef.current = null;
+      setBgExportUi((prev) => ({
+        ...prev,
+        pendingCount: 0,
+        activeLabel: null,
+      }));
     }
-    setVideoShareFeedback(null);
-    setShowCloudPicker(true);
+  }, [includePoseInVideo, videoTimeMode, videoTargetFps]);
+
+  const enqueueVideoExport = useCallback(
+    (run: SpeedRun, action: 'download' | 'share') => {
+      if (!getStoredRuns().some((r) => r.id === run.id)) {
+        saveRun(run);
+      }
+      const settingsNow = sensorStateRef.current;
+      exportQueueRef.current.push({
+        id: `exp-${run.id}-${Date.now()}`,
+        run,
+        action,
+        withPose: settingsNow.includePoseInVideo,
+        videoTimeMode: settingsNow.videoTimeMode,
+        exportFps: settingsNow.videoTargetFps,
+        trimMarginSec: settingsNow.videoTrimMarginSec,
+      });
+      setBgExportUi((prev) => ({
+        ...prev,
+        pendingCount: exportQueueRef.current.length + (isProcessingQueueRef.current ? 1 : 0),
+        activeLabel: prev.activeLabel || `${run.climberName || 'Lezec'} (${run.totalTime.toFixed(3)}s)`,
+      }));
+      void processExportQueue();
+    },
+    [processExportQueue]
+  );
+
+  // Save/Export in background AND immediately unlock UI so coach can switch climber & start next attempt!
+  const enqueueRunSaveAndReadyNext = useCallback(
+    (action: 'download' | 'share', runOverride?: SpeedRun) => {
+      const targetRun = runOverride || finishedRunRef.current;
+      if (!targetRun) return;
+
+      const mem = recordedPoseDataMapRef.current.get(targetRun.id);
+      const snapshotRun: SpeedRun = mem
+        ? {
+            ...targetRun,
+            videoUrl: targetRun.videoUrl || mem.videoUrl,
+            videoTiming: targetRun.videoTiming || mem.timing,
+            videoCalibration: targetRun.videoCalibration || mem.calibration,
+            poseTimeline: targetRun.poseTimeline || mem.poseTimeline,
+          }
+        : targetRun;
+
+      const hasOrExpectsVideo = Boolean(
+        snapshotRun.videoUrl || postRollPromisesByRunRef.current.has(snapshotRun.id) || postRollActiveRef.current
+      );
+
+      if (hasOrExpectsVideo) {
+        enqueueVideoExport(snapshotRun, action);
+      } else if (!getStoredRuns().some((r) => r.id === snapshotRun.id)) {
+        saveRun(snapshotRun);
+      }
+
+      // Clear finished UI immediately for instant next climber start
+      setFinishedRun(null);
+      setElapsedMs(0);
+      setSplit1Time(null);
+      setSplit2Time(null);
+      split1TimeRef.current = null;
+      split2TimeRef.current = null;
+      setRecordedVideoUrl(null);
+      setShowDeleteVideoConfirm(false);
+      setShowDeleteRunConfirm(false);
+      setShowCloudPicker(false);
+      setLastLineTrigger(null);
+      setVideoShareFeedback(null);
+
+      showGestureFeedback(
+        hasOrExpectsVideo
+          ? action === 'share'
+            ? '☁️ Ukládá se na pozadí pro Disk — další lezec může startovat!'
+            : '💾 Ukládá se na pozadí — další lezec může startovat!'
+          : `✓ Pokus (${snapshotRun.totalTime.toFixed(3)}s) uložen — připraveno pro dalšího lezce`
+      );
+    },
+    [enqueueVideoExport]
+  );
+
+  const handleTriggerReadyShare = async () => {
+    const ready = bgExportUi.readyShareJob;
+    if (!ready) return;
+    const file = new File([ready.blob], ready.filename, { type: ready.mimeType });
+    if (typeof navigator !== 'undefined' && navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({
+          files: [file],
+          title: `Fifteen Speed Climbing - ${ready.run.totalTime.toFixed(3)}s`,
+          text: `Výlez ${ready.run.climberName || 'lezce'} v čase ${ready.run.totalTime.toFixed(3)}s`,
+        });
+        setBgExportUi((prev) => ({
+          ...prev,
+          readyShareJob: null,
+          finishedToast: `☁️ Odesláno na Disk: ${ready.filename}`,
+        }));
+        setTimeout(() => {
+          setBgExportUi((prev) => ({ ...prev, finishedToast: null }));
+        }, 3200);
+        return;
+      } catch {
+        // user dismissed or blocked
+      }
+    }
+    triggerBlobDownload(ready.blob, ready.filename);
+    setBgExportUi((prev) => ({
+      ...prev,
+      readyShareJob: null,
+      finishedToast: `💾 Video staženo (${ready.filename}) — nahrajte na Disk`,
+    }));
+    setTimeout(() => {
+      setBgExportUi((prev) => ({ ...prev, finishedToast: null }));
+    }, 3600);
+  };
+
+  const handleDownloadReadyShare = () => {
+    const ready = bgExportUi.readyShareJob;
+    if (!ready) return;
+    triggerBlobDownload(ready.blob, ready.filename);
+    setBgExportUi((prev) => ({
+      ...prev,
+      readyShareJob: null,
+      finishedToast: `✓ Video staženo: ${ready.filename}`,
+    }));
+    setTimeout(() => {
+      setBgExportUi((prev) => ({ ...prev, finishedToast: null }));
+    }, 3200);
+  };
+
+  const handleDownloadVideoDirect = async (runOverride?: SpeedRun) => {
+    enqueueRunSaveAndReadyNext('download', runOverride);
   };
 
   // Mic & Sound Trigger + Wall Sound Scanning
@@ -1458,11 +1713,29 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
   const postRollCountdownTimerRef = useRef<NodeJS.Timeout | null>(null);
   const postRollActiveRef = useRef<boolean>(false);
   const postRollPromiseRef = useRef<Promise<void> | null>(null);
+  const postRollPromisesByRunRef = useRef<Map<string, Promise<void>>>(new Map());
   const finalizePostRollNowRef = useRef<(() => void) | null>(null);
   const poseHistoryBufferRef = useRef<TimedPoseSample[]>([]);
   const recordedPoseDataMapRef = useRef<
-    Map<string, { timing: VideoTimingMeta; calibration: VideoCalibrationLines; poseTimeline: RecordedPoseSample[] }>
+    Map<
+      string,
+      { videoUrl?: string; timing: VideoTimingMeta; calibration: VideoCalibrationLines; poseTimeline: RecordedPoseSample[] }
+    >
   >(new Map());
+  const exportQueueRef = useRef<
+    {
+      id: string;
+      run: SpeedRun;
+      action: 'download' | 'share';
+      withPose: boolean;
+      videoTimeMode: VideoTimeOverlayMode;
+      exportFps: 30 | 60;
+      trimMarginSec: 0 | 1 | 3;
+    }[]
+  >([]);
+  const isProcessingQueueRef = useRef<boolean>(false);
+  const activeExportRunIdRef = useRef<string | null>(null);
+  const lastBgThrottleRef = useRef<number>(0);
   const finishedRunRef = useRef<SpeedRun | null>(null);
   finishedRunRef.current = finishedRun;
 
@@ -1547,6 +1820,21 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     setIsRecording(false);
   }, [discardRecorderSlot]);
 
+  // Live-update camera FPS constraint whenever user changes videoFps in Settings while camera is active
+  useEffect(() => {
+    if (!cameraActive || !mediaStreamRef.current) return;
+    const track = mediaStreamRef.current.getVideoTracks?.()[0];
+    if (track && typeof track.applyConstraints === 'function') {
+      track
+        .applyConstraints({ frameRate: { ideal: videoTargetFps, min: 30 } })
+        .then(() => {
+          const fpsNow = track.getSettings?.().frameRate;
+          if (fpsNow) setActualCameraFps(Math.round(fpsNow));
+        })
+        .catch(() => {});
+    }
+  }, [cameraActive, videoTargetFps]);
+
   // Background Rolling Pre-Roll Buffer: always keeps 3.2s - 6.7s of video BEFORE start line is crossed!
   useEffect(() => {
     if (!cameraActive || !recordVideoOnRun) {
@@ -1560,7 +1848,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
     const maintainPreRoll = () => {
       const stream = mediaStreamRef.current;
-      if (!stream || sensorStateRef.current.isRunning || postRollActiveRef.current || isExportingVideoRef.current) return;
+      if (!stream || sensorStateRef.current.isRunning || postRollActiveRef.current) return;
 
       const now = performance.now();
       if (!primaryRecSlotRef.current) {
@@ -1592,11 +1880,16 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     };
   }, [cameraActive, recordVideoOnRun, createRecorderSlot, discardRecorderSlot, cancelPendingPostRoll]);
 
-  // Lock active pre-roll slot onto the current run when timer starts
+  // Lock active pre-roll slot onto the current run when timer starts.
+  // If a previous climber's post-roll is still wrapping up, finalize it cleanly instead of discarding it!
   const startMediaRecording = useCallback(
     (climbStartTs: number) => {
       if (!mediaStreamRef.current || !recordVideoOnRun) return;
-      cancelPendingPostRoll();
+      if (finalizePostRollNowRef.current) {
+        finalizePostRollNowRef.current();
+      } else {
+        cancelPendingPostRoll();
+      }
       if (standbyRecSlotRef.current) {
         discardRecorderSlot(standbyRecSlotRef.current);
         standbyRecSlotRef.current = null;
@@ -1615,9 +1908,10 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     [recordVideoOnRun, cancelPendingPostRoll, discardRecorderSlot, createRecorderSlot]
   );
 
-  // Continue recording for +3.0 seconds AFTER crossing finish line, then attach trimmed clip & pose timeline
+  // Continue recording for configured margin (3s / 1s / 0s) AFTER crossing finish line, then attach clip & pose timeline
   const schedulePostRollStop = useCallback(
-    (runId: string, stopTs: number, calSnapshot: VideoCalibrationLines) => {
+    (runSnapshot: SpeedRun, stopTs: number, calSnapshot: VideoCalibrationLines) => {
+      const runId = runSnapshot.id;
       const capture = activeRunRecRef.current;
       if (!capture) {
         setIsRecording(false);
@@ -1629,22 +1923,23 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         primaryRecSlotRef.current = null;
       }
 
+      const marginSec = sensorStateRef.current.videoTrimMarginSec;
       const recStartTs = capture.slot.startTs;
       const climbStartSec = Math.max(0, (capture.climbStartTs - recStartTs) / 1000);
       const climbEndSec = Math.max(climbStartSec + 0.05, (stopTs - recStartTs) / 1000);
       const timing: VideoTimingMeta = {
-        preRollStartSec: Math.max(0, climbStartSec - 3.0),
+        preRollStartSec: Math.max(0, climbStartSec - marginSec),
         climbStartSec,
         climbEndSec,
-        postRollEndSec: climbEndSec + 3.0,
+        postRollEndSec: climbEndSec + marginSec,
       };
 
       postRollActiveRef.current = true;
-      setIsPostRollRecording(true);
-      setPostRollRemainingSec(3);
+      setIsPostRollRecording(marginSec > 0);
+      setPostRollRemainingSec(marginSec);
 
       let finalized = false;
-      postRollPromiseRef.current = new Promise<void>((resolvePostRoll) => {
+      const postRollPromise = new Promise<void>((resolvePostRoll) => {
         const finalizeNow = () => {
           if (finalized) return;
           finalized = true;
@@ -1680,7 +1975,10 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
           const slot = capture.slot;
           slot.recorder.onstop = () => {
             postRollActiveRef.current = false;
-            postRollPromiseRef.current = null;
+            if (postRollPromiseRef.current === postRollPromise) {
+              postRollPromiseRef.current = null;
+            }
+            postRollPromisesByRunRef.current.delete(runId);
             setIsPostRollRecording(false);
             setPostRollRemainingSec(0);
             setIsRecording(false);
@@ -1693,14 +1991,15 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
             const blob = new Blob(slot.chunks, { type: slot.mimeType || 'video/webm' });
             const videoUrl = URL.createObjectURL(blob);
             recordedPoseDataMapRef.current.set(runId, {
+              videoUrl,
               timing: resolvedTiming,
               calibration: calSnapshot,
               poseTimeline,
             });
-            setRecordedVideoUrl(videoUrl);
+            updateRunVideo(runId, videoUrl);
+            setRecordedVideoUrl((prevUrl) => (sensorStateRef.current.isRunning ? prevUrl : videoUrl));
             setFinishedRun((prev) => {
               if (!prev || prev.id !== runId) return prev;
-              updateRunVideo(prev.id, videoUrl);
               return {
                 ...prev,
                 videoUrl,
@@ -1710,8 +2009,20 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
               };
             });
 
-            // Immediately spin up next rolling pre-roll recorder for next attempt
-            if (mediaStreamRef.current && !primaryRecSlotRef.current) {
+            // Auto-save to background queue if enabled in Settings
+            if (sensorStateRef.current.autoSaveVideoOnFinish) {
+              const autoRun: SpeedRun = {
+                ...runSnapshot,
+                videoUrl,
+                videoTiming: resolvedTiming,
+                videoCalibration: calSnapshot,
+                poseTimeline,
+              };
+              sensorStateRef.current.enqueueVideoExport(autoRun, 'download');
+            }
+
+            // Spin up rolling pre-roll recorder for the next attempt if idle
+            if (mediaStreamRef.current && !sensorStateRef.current.isRunning && !primaryRecSlotRef.current) {
               primaryRecSlotRef.current = createRecorderSlot(mediaStreamRef.current);
             }
             resolvePostRoll();
@@ -1723,6 +2034,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
             } catch {
               postRollActiveRef.current = false;
               postRollPromiseRef.current = null;
+              postRollPromisesByRunRef.current.delete(runId);
               setIsPostRollRecording(false);
               setIsRecording(false);
               resolvePostRoll();
@@ -1730,6 +2042,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
           } else {
             postRollActiveRef.current = false;
             postRollPromiseRef.current = null;
+            postRollPromisesByRunRef.current.delete(runId);
             setIsPostRollRecording(false);
             setIsRecording(false);
             resolvePostRoll();
@@ -1738,14 +2051,20 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
         finalizePostRollNowRef.current = finalizeNow;
 
-        let secsLeft = 3;
-        postRollCountdownTimerRef.current = setInterval(() => {
-          secsLeft = Math.max(1, secsLeft - 1);
-          setPostRollRemainingSec(secsLeft);
-        }, 980);
-
-        postRollTimerRef.current = setTimeout(finalizeNow, 3000);
+        if (marginSec <= 0) {
+          postRollTimerRef.current = setTimeout(finalizeNow, 50);
+        } else {
+          let secsLeft: number = marginSec;
+          postRollCountdownTimerRef.current = setInterval(() => {
+            secsLeft = Math.max(1, secsLeft - 1);
+            setPostRollRemainingSec(secsLeft);
+          }, 980);
+          postRollTimerRef.current = setTimeout(finalizeNow, marginSec * 1000);
+        }
       });
+
+      postRollPromiseRef.current = postRollPromise;
+      postRollPromisesByRunRef.current.set(runId, postRollPromise);
     },
     [createRecorderSlot]
   );
@@ -1842,8 +2161,8 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     setFinishedRun(persistedRun);
     onRunFinished(persistedRun);
 
-    // Record +3 seconds after crossing red top finish line before finalizing clip
-    schedulePostRollStop(persistedRun.id, stopTs, {
+    // Record configured post-roll margin after crossing red top finish line before finalizing clip
+    schedulePostRollStop(persistedRun, stopTs, {
       startY: startZoneY,
       split1Y: split1ZoneY,
       split2Y: split2ZoneY,
@@ -2038,13 +2357,18 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
   const handleDeleteVideo = useCallback(() => {
     if (!finishedRun?.videoUrl) return;
-    try {
-      URL.revokeObjectURL(finishedRun.videoUrl);
-    } catch {
-      // ignore
+    const isQueued =
+      exportQueueRef.current.some((j) => j.run.id === finishedRun.id) ||
+      activeExportRunIdRef.current === finishedRun.id;
+    if (!isQueued) {
+      try {
+        URL.revokeObjectURL(finishedRun.videoUrl);
+      } catch {
+        // ignore
+      }
+      recordedPoseDataMapRef.current.delete(finishedRun.id);
     }
     removeRunVideo(finishedRun.id);
-    recordedPoseDataMapRef.current.delete(finishedRun.id);
     setRecordedVideoUrl(null);
     setFinishedRun((prev) => (prev ? { ...prev, videoUrl: undefined } : null));
     setShowDeleteVideoConfirm(false);
@@ -2052,7 +2376,10 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
   const handleDeleteRunAttempt = useCallback(() => {
     if (!finishedRun) return;
-    if (finishedRun.videoUrl) {
+    const isQueued =
+      exportQueueRef.current.some((j) => j.run.id === finishedRun.id) ||
+      activeExportRunIdRef.current === finishedRun.id;
+    if (finishedRun.videoUrl && !isQueued) {
       try {
         URL.revokeObjectURL(finishedRun.videoUrl);
       } catch {
@@ -2479,6 +2806,12 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     split1ZoneY,
     split2ZoneY,
     finishZoneY,
+    videoTrimMarginSec,
+    autoSaveVideoOnFinish,
+    includePoseInVideo,
+    videoTimeMode,
+    videoTargetFps,
+    enqueueVideoExport,
     startTimerNow,
     stopTimer,
     handlePreBeepFalseStart,
@@ -2497,6 +2830,12 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     split1ZoneY,
     split2ZoneY,
     finishZoneY,
+    videoTrimMarginSec,
+    autoSaveVideoOnFinish,
+    includePoseInVideo,
+    videoTimeMode,
+    videoTargetFps,
+    enqueueVideoExport,
     startTimerNow,
     stopTimer,
     handlePreBeepFalseStart,
@@ -2919,16 +3258,21 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     };
 
     const processCameraFrame = () => {
-      if (stopped || isExportingVideoRef.current) return;
+      if (stopped) return;
       const st = sensorStateRef.current;
+      const nowMs = performance.now();
+      // During background export while idle, throttle MediaPipe slightly; full speed whenever a run/countdown is active!
+      if (isExportingVideoRef.current && !st.isRunning && st.countdownState === 'idle') {
+        if (nowMs - lastBgThrottleRef.current < 110) return;
+        lastBgThrottleRef.current = nowMs;
+      }
+
       const video = videoRef.current;
       const canvas = canvasRef.current;
 
       if (st.startMode !== 'camera_motion' || !video || video.readyState < 2 || video.videoWidth === 0) {
         return;
       }
-
-      const nowMs = performance.now();
 
       // Primary Engine: Google MediaPipe PoseLandmarker (multi-pose + locked lane support)
       const landmarker = poseLandmarkerRef.current;
@@ -3364,22 +3708,14 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     }, 2600);
   };
 
-  // Gesture 1: Swipe Left (1 finger) -> Save Run / Video (or Calibration)
+  // Gesture 1: Swipe Left (1 finger) -> Save Run / Video in Background (or Calibration)
   const handleGestureSave = async () => {
     if (isRunning) {
       showGestureFeedback('Nejprve dokončete výlez (stop), poté přejetím doleva uložíte.');
       return;
     }
     if (finishedRun) {
-      saveRun(finishedRun);
-      if (finishedRun.videoUrl || postRollPromiseRef.current) {
-        showGestureFeedback('💾 Ukládám pokus i video...');
-        await handleDownloadVideoDirect(finishedRun);
-        const latest = finishedRunRef.current || finishedRun;
-        showGestureFeedback(`✓ Pokus (${latest.totalTime.toFixed(3)}s) i video uloženy!`);
-      } else {
-        showGestureFeedback(`✓ Pokus (${finishedRun.totalTime.toFixed(3)}s) uložen!`);
-      }
+      enqueueRunSaveAndReadyNext('download', finishedRun);
       return;
     }
     if (isAiCameraMode && isCalibrating) {
@@ -3667,214 +4003,249 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
         </div>
       </div>
 
-      {/* Camera Live Toggle & Viewfinder Positioning Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 p-2 sm:p-2.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs">
-        <button
-          onClick={toggleCamera}
-          className={`min-h-[40px] px-3.5 py-1.5 rounded-xl font-bold transition-all flex items-center gap-2 ${
-            cameraActive
-              ? 'bg-red-600 text-white shadow-sm'
-              : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
-          }`}
-        >
-          <Camera className="w-4 h-4" />
-          <span>{cameraActive ? 'Kamera aktivní' : 'Aktivovat kameru'}</span>
-        </button>
-
-        {cameraActive && (
-          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-            {/* AI Kamera-ONLY Controls: Lines, Calibration, Wall Scan, Sensitivity */}
-            {isAiCameraMode && (
+      {/* Quick 1-Tap Climber Switcher Bar (fast changeover while video exports in background) */}
+      <div className="relative flex flex-wrap items-center justify-between gap-2 px-2.5 py-2 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs">
+        <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+          <Users className="w-3.5 h-3.5 text-red-500 shrink-0" />
+          <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 shrink-0">Lezec:</span>
+          {climberProfiles.slice(0, 4).map((p) => {
+            const isActive = p.id === profile.id;
+            return (
+              <button
+                key={p.id}
+                type="button"
+                disabled={isRunning}
+                onClick={() => handleSwitchClimber(p.id)}
+                className={`min-h-[32px] px-2.5 py-1 rounded-xl font-bold transition-all flex items-center gap-1 border disabled:opacity-50 ${
+                  isActive
+                    ? 'bg-red-600 text-white border-red-500 shadow-sm'
+                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-transparent hover:bg-slate-200 dark:hover:bg-slate-700'
+                }`}
+              >
+                <span>{p.flagEmoji || '🧗'}</span>
+                <span className="truncate max-w-[96px]">{p.name}</span>
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            disabled={isRunning}
+            onClick={() => {
+              setClimberProfiles(getAllProfiles());
+              setShowClimberSwitcher((prev) => !prev);
+            }}
+            className="min-h-[32px] px-2.5 py-1 rounded-xl font-bold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors flex items-center gap-1 disabled:opacity-50"
+            title="Další lezci nebo rychlé přidání lezce"
+          >
+            {climberProfiles.length > 4 ? (
               <>
-                <button
-                  onClick={() => setShowGuides(!showGuides)}
-                  className={`min-h-[38px] px-2.5 sm:px-3 py-1 rounded-xl font-bold transition-all flex items-center gap-1 border ${
-                    showGuides
-                      ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 border-emerald-300 dark:border-emerald-800'
-                      : 'bg-slate-100 dark:bg-slate-800 text-slate-400 border-transparent'
-                  }`}
-                  title="Zobrazit/skrýt spouštěcí linie a sledování"
-                >
-                  <Target className="w-3.5 h-3.5" />
-                  <span className="hidden xs:inline">Linie stěny</span>
-                </button>
-
-                <button
-                  onClick={() => {
-                    const next = !isCalibrating;
-                    setIsCalibrating(next);
-                    if (next) {
-                      setShowGuides(true);
-                    } else {
-                      setEditingLine(null);
-                    }
-                  }}
-                  className={`min-h-[38px] px-2.5 sm:px-3 py-1 rounded-xl font-bold transition-all flex items-center gap-1 border ${
-                    isCalibrating
-                      ? 'bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 border-red-300 dark:border-red-900'
-                      : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-transparent hover:bg-slate-200'
-                  }`}
-                  title="Kalibrace linií Start, 5m/3.3m, 10m/6.6m a Cíl"
-                >
-                  <Sliders className="w-3.5 h-3.5" />
-                  <span>Kalibrace</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={toggleIfscStartWithCamera}
-                  className={`min-h-[38px] px-2.5 sm:px-3 py-1 rounded-xl font-bold transition-all flex items-center gap-1 border ${
-                    ifscStartWithCamera
-                      ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-800'
-                      : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-transparent hover:bg-slate-200'
-                  }`}
-                  title="Zapnout/vypnout IFSC zvukový odpočet a hlídání ulitého startu v režimu AI Kamera"
-                >
-                  <Zap className="w-3.5 h-3.5" />
-                  <span>{ifscStartWithCamera ? 'IFSC start: ZAP' : 'IFSC start: VYP'}</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={captureWallBackground}
-                  className={`min-h-[38px] px-2.5 sm:px-3 py-1 rounded-xl font-bold transition-all flex items-center gap-1 border ${
-                    wallBgReady
-                      ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border-blue-300 dark:border-blue-800'
-                      : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-transparent hover:bg-slate-200'
-                  }`}
-                  title="Naskenovat prázdnou stěnu pro přesnější AI sledování nohy, těla a rukou"
-                >
-                  <Crosshair className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">Naskenovat stěnu</span>
-                </button>
-
-                <button
-                  onClick={() => {
-                    const next = sensitivityPreset === 'medium' ? 'high' : sensitivityPreset === 'high' ? 'low' : 'medium';
-                    setSensitivityPreset(next);
-                  }}
-                  className="min-h-[38px] px-2.5 sm:px-3 py-1 rounded-xl font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 transition-colors flex items-center gap-1"
-                  title="Citlivost AI detekce lezce (Střední, Vysoká, Nízká)"
-                >
-                  <Activity className="w-3.5 h-3.5 text-amber-500" />
-                  <span className="hidden sm:inline">Citlivost:</span>
-                  <span className="capitalize">{sensitivityPreset === 'medium' ? 'Stř.' : sensitivityPreset === 'high' ? 'Vys.' : 'Níz.'}</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (lockedClimber) {
-                      unlockClimber();
-                    } else {
-                      setIsPickingClimber((prev) => !prev);
-                    }
-                  }}
-                  className={`min-h-[38px] px-2.5 sm:px-3 py-1 rounded-xl font-bold transition-all flex items-center gap-1 border ${
-                    lockedClimber
-                      ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border-emerald-400 dark:border-emerald-700'
-                      : isPickingClimber
-                      ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 border-amber-400 animate-pulse'
-                      : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-transparent hover:bg-slate-200'
-                  }`}
-                  title="Kliknutím na osobu v obraze ji zafixujete, aby kolemjdoucí nenarušili sledování"
-                >
-                  {lockedClimber ? <Lock className="w-3.5 h-3.5 text-emerald-500" /> : <Unlock className="w-3.5 h-3.5" />}
-                  <span>
-                    {lockedClimber
-                      ? 'Zafixováno'
-                      : isPickingClimber
-                      ? 'Klepni na lezce'
-                      : 'Zafixovat osobu'}
-                  </span>
-                </button>
+                <span>+{climberProfiles.length - 4}</span>
+                <ChevronDown className="w-3.5 h-3.5" />
+              </>
+            ) : (
+              <>
+                <UserPlus className="w-3.5 h-3.5" />
+                <span className="hidden xs:inline">Další</span>
               </>
             )}
+          </button>
+        </div>
 
-            {/* Fit mode toggle: contain (tall speed wall) vs cover */}
-            <button
-              onClick={() => setCameraFit(cameraFit === 'contain' ? 'cover' : 'contain')}
-              className={`min-h-[38px] px-2.5 sm:px-3 py-1 rounded-xl font-bold transition-all flex items-center gap-1 border ${
-                cameraFit === 'contain'
-                  ? 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 border-indigo-300 dark:border-indigo-800'
-                  : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-transparent hover:bg-slate-200'
-              }`}
-              title={cameraFit === 'contain' ? 'Zvětšené vysoké okno: zobrazen celý záběr stěny od země po cíl' : 'Výplň obrazovky (ořízne strany)'}
-            >
-              {cameraFit === 'contain' ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
-              <span>{cameraFit === 'contain' ? 'Celý záběr ↕' : 'Výplň'}</span>
-            </button>
+        {/* Camera Live Toggle & Live Scene Actions (other camera/video preferences live in Settings) */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            onClick={toggleCamera}
+            className={`min-h-[36px] px-3 py-1 rounded-xl font-bold transition-all flex items-center gap-1.5 ${
+              cameraActive
+                ? 'bg-red-600 text-white shadow-sm'
+                : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200'
+            }`}
+          >
+            <Camera className="w-4 h-4" />
+            <span>{cameraActive ? 'Kamera aktivní' : 'Aktivovat kameru'}</span>
+          </button>
 
-            {/* Auto video record toggle + FPS selector (60 FPS / 30 FPS) */}
-            <button
-              onClick={() => setRecordVideoOnRun(!recordVideoOnRun)}
-              className={`min-h-[38px] px-2.5 sm:px-3 py-1 rounded-xl font-bold transition-all flex items-center gap-1 border ${
-                recordVideoOnRun
-                  ? 'bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 border-red-300 dark:border-red-900'
-                  : 'bg-slate-100 dark:bg-slate-800 text-slate-400 border-transparent'
-              }`}
-            >
-              <Video className="w-3.5 h-3.5" />
-              <span className="hidden xs:inline">{recordVideoOnRun ? 'Záznam: ZAP' : 'Záznam: VYP'}</span>
-            </button>
+          {cameraActive && (
+            <>
+              {isAiCameraMode && (
+                <>
+                  <button
+                    onClick={() => {
+                      const next = !isCalibrating;
+                      setIsCalibrating(next);
+                      if (!next) {
+                        setEditingLine(null);
+                      }
+                    }}
+                    className={`min-h-[36px] px-2.5 py-1 rounded-xl font-bold transition-all flex items-center gap-1 border ${
+                      isCalibrating
+                        ? 'bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 border-red-300 dark:border-red-900'
+                        : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-transparent hover:bg-slate-200'
+                    }`}
+                    title="Kalibrace linií Start, 5m/3.3m, 10m/6.6m a Cíl"
+                  >
+                    <Sliders className="w-3.5 h-3.5" />
+                    <span>Kalibrace</span>
+                  </button>
 
-            {recordVideoOnRun && (
+                  <button
+                    type="button"
+                    onClick={captureWallBackground}
+                    className={`min-h-[36px] px-2.5 py-1 rounded-xl font-bold transition-all flex items-center gap-1 border ${
+                      wallBgReady
+                        ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border-blue-300 dark:border-blue-800'
+                        : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-transparent hover:bg-slate-200'
+                    }`}
+                    title="Naskenovat prázdnou stěnu pro přesnější AI sledování"
+                  >
+                    <Crosshair className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">Naskenovat stěnu</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (lockedClimber) {
+                        unlockClimber();
+                      } else {
+                        setIsPickingClimber((prev) => !prev);
+                      }
+                    }}
+                    className={`min-h-[36px] px-2.5 py-1 rounded-xl font-bold transition-all flex items-center gap-1 border ${
+                      lockedClimber
+                        ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border-emerald-400 dark:border-emerald-700'
+                        : isPickingClimber
+                        ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 border-amber-400 animate-pulse'
+                        : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-transparent hover:bg-slate-200'
+                    }`}
+                    title="Kliknutím na osobu v obraze ji zafixujete, aby kolemjdoucí nenarušili sledování"
+                  >
+                    {lockedClimber ? <Lock className="w-3.5 h-3.5 text-emerald-500" /> : <Unlock className="w-3.5 h-3.5" />}
+                    <span>
+                      {lockedClimber
+                        ? 'Zafixováno'
+                        : isPickingClimber
+                        ? 'Klepni na lezce'
+                        : 'Zafixovat osobu'}
+                    </span>
+                  </button>
+                </>
+              )}
+
               <button
                 type="button"
-                onClick={async () => {
-                  const nextFps: 30 | 60 = videoTargetFps === 60 ? 30 : 60;
-                  setVideoTargetFps(nextFps);
-                  const track = mediaStreamRef.current?.getVideoTracks?.()[0];
-                  if (track && typeof track.applyConstraints === 'function') {
-                    try {
-                      await track.applyConstraints({ frameRate: { ideal: nextFps, min: 30 } });
-                      const fpsNow = track.getSettings?.().frameRate;
-                      if (fpsNow) setActualCameraFps(Math.round(fpsNow));
-                    } catch {
-                      // ignore if hardware locks fps
-                    }
-                  }
-                }}
-                className={`min-h-[38px] px-2.5 py-1 rounded-xl font-mono font-bold transition-all flex items-center gap-1 border ${
-                  videoTargetFps === 60
-                    ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-300 dark:border-emerald-800'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-transparent'
+                onClick={() => setIsCameraExpanded((prev) => !prev)}
+                className={`min-h-[36px] px-2.5 py-1 rounded-xl font-bold transition-all flex items-center gap-1 border ${
+                  isCameraExpanded
+                    ? 'bg-emerald-600 text-white border-emerald-500 shadow-sm'
+                    : 'bg-slate-900 dark:bg-slate-800 text-white border-slate-700 hover:bg-slate-800'
                 }`}
-                title="Počet snímků za sekundu pro záznam i export (60 FPS pro plynulé zpomalení, 30 FPS pro úsporu výkonu)"
+                title="Roztáhnout kameru přes celý displej"
               >
-                <span>{videoTargetFps} FPS</span>
-                {actualCameraFps && actualCameraFps !== videoTargetFps && (
-                  <span className="text-[10px] opacity-75">({actualCameraFps})</span>
-                )}
+                {isCameraExpanded ? <Minimize2 className="w-3.5 h-3.5" /> : <Expand className="w-3.5 h-3.5" />}
+                <span>{isCameraExpanded ? 'Zmenšit' : 'Celý displej'}</span>
               </button>
-            )}
 
-            {/* Fullscreen Camera Expansion (fills screen between TopBar & BottomTabBar) */}
-            <button
-              type="button"
-              onClick={() => setIsCameraExpanded((prev) => !prev)}
-              className={`min-h-[38px] px-2.5 sm:px-3 py-1 rounded-xl font-bold transition-all flex items-center gap-1 border ${
-                isCameraExpanded
-                  ? 'bg-emerald-600 text-white border-emerald-500 shadow-sm'
-                  : 'bg-slate-900 dark:bg-slate-800 text-white border-slate-700 hover:bg-slate-800'
-              }`}
-              title="Roztáhnout kameru přes celý displej (kromě horní lišty a spodní navigace)"
-            >
-              {isCameraExpanded ? <Minimize2 className="w-3.5 h-3.5" /> : <Expand className="w-3.5 h-3.5" />}
-              <span>{isCameraExpanded ? 'Zmenšit' : 'Celý displej'}</span>
-            </button>
+              <button
+                onClick={switchCameraFacing}
+                title="Otočit kameru (Přední / Zadní)"
+                className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 flex items-center justify-center hover:bg-slate-200 transition-colors"
+              >
+                <RefreshCw className="w-4 h-4" />
+              </button>
+            </>
+          )}
+        </div>
 
-            {/* Switch facing front/back */}
-            <button
-              onClick={switchCameraFacing}
-              title="Otočit kameru (Přední / Zadní)"
-              className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 flex items-center justify-center hover:bg-slate-200 transition-colors"
-            >
-              <RefreshCw className="w-4 h-4" />
-            </button>
+        {/* Climber Picker + Quick Add Dropdown */}
+        {showClimberSwitcher && !isCameraExpanded && (
+          <div className="w-full pt-2 mt-1 border-t border-slate-200 dark:border-slate-800 space-y-2 animate-in fade-in">
+            <div className="flex flex-wrap gap-1.5">
+              {climberProfiles.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => handleSwitchClimber(p.id)}
+                  className={`px-2.5 py-1.5 rounded-xl text-xs font-bold border flex items-center gap-1.5 transition-all ${
+                    p.id === profile.id
+                      ? 'bg-red-600 text-white border-red-500'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-transparent hover:border-slate-300 dark:hover:border-slate-700'
+                  }`}
+                >
+                  <span>{p.flagEmoji || '🧗'}</span>
+                  <span>{p.name}</span>
+                </button>
+              ))}
+            </div>
+            <form onSubmit={handleQuickCreateClimber} className="flex items-center gap-1.5">
+              <input
+                type="text"
+                value={newClimberName}
+                onChange={(e) => setNewClimberName(e.target.value)}
+                placeholder="Nový lezec (např. Jana Nová)..."
+                className="flex-1 min-w-0 px-2.5 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs text-slate-900 dark:text-white outline-none focus:border-red-500"
+              />
+              <button
+                type="submit"
+                className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1"
+              >
+                <UserPlus className="w-3.5 h-3.5" />
+                <span>Přidat</span>
+              </button>
+            </form>
           </div>
         )}
       </div>
+
+      {/* Non-blocking Background Video Export & Cloud Ready Banner (normal view) */}
+      {(bgExportUi.pendingCount > 0 || bgExportUi.finishedToast || bgExportUi.readyShareJob) && !isCameraExpanded && (
+        <div className="px-3 py-2 rounded-2xl bg-slate-900 text-white border border-slate-700/80 shadow-md flex flex-wrap items-center justify-between gap-2 text-xs">
+          {bgExportUi.pendingCount > 0 ? (
+            <div className="flex items-center gap-2 font-bold text-amber-300">
+              <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+              <span>
+                Ukládám video na pozadí ({bgExportUi.pendingCount}): {bgExportUi.activeLabel}
+              </span>
+            </div>
+          ) : bgExportUi.readyShareJob ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 w-full">
+              <span className="font-bold text-blue-200">
+                ☁️ Připraveno pro Disk: {bgExportUi.readyShareJob.filename}
+              </span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => void handleTriggerReadyShare()}
+                  className="px-2.5 py-1 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold flex items-center gap-1"
+                >
+                  <Cloud className="w-3.5 h-3.5" />
+                  <span>Odeslat</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDownloadReadyShare}
+                  className="px-2.5 py-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold flex items-center gap-1"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Stáhnout</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBgExportUi((prev) => ({ ...prev, readyShareJob: null }))}
+                  className="p-1 text-slate-400 hover:text-white"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 font-bold text-emerald-300">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>{bgExportUi.finishedToast}</span>
+            </div>
+          )}
+        </div>
+      )}
 
       {cameraError && (
         <p className="text-xs text-amber-600 bg-amber-50 dark:bg-amber-950/30 p-2.5 rounded-2xl border border-amber-200 dark:border-amber-900">
@@ -4247,59 +4618,138 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
               </div>
             )}
 
-            {/* Floating Lock/Unlock & IFSC Countdown Pills inside Fullscreen Camera (easy 1-tap access without exiting) */}
-            {isCameraExpanded && isAiCameraMode && !isCalibrating && !editingLine && !finishedRun && (
+            {/* Fullscreen Floating Background Export Status Pill */}
+            {isCameraExpanded && (bgExportUi.pendingCount > 0 || bgExportUi.finishedToast || bgExportUi.readyShareJob) && (
+              <div
+                data-no-gesture="true"
+                onClick={(e) => e.stopPropagation()}
+                className="absolute top-3 left-3 right-3 z-40 flex justify-center pointer-events-auto"
+              >
+                {bgExportUi.pendingCount > 0 ? (
+                  <div className="px-3 py-1.5 rounded-full bg-slate-950/90 border border-amber-400/50 text-amber-200 text-[11px] font-bold shadow-xl backdrop-blur-md flex items-center gap-1.5">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>
+                      Ukládám na pozadí ({bgExportUi.pendingCount}): {bgExportUi.activeLabel}
+                    </span>
+                  </div>
+                ) : bgExportUi.readyShareJob ? (
+                  <div className="px-3 py-1.5 rounded-2xl bg-slate-950/95 border border-blue-400/60 text-white text-[11px] font-bold shadow-xl backdrop-blur-md flex flex-wrap items-center gap-2">
+                    <span className="text-blue-200">☁️ Připraveno pro Disk</span>
+                    <button
+                      type="button"
+                      onClick={() => void handleTriggerReadyShare()}
+                      className="px-2 py-0.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-bold"
+                    >
+                      Odeslat
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleDownloadReadyShare}
+                      className="px-2 py-0.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold"
+                    >
+                      Stáhnout
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBgExportUi((prev) => ({ ...prev, readyShareJob: null }))}
+                      className="text-slate-400 hover:text-white"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="px-3 py-1.5 rounded-full bg-emerald-950/90 border border-emerald-400/50 text-emerald-200 text-[11px] font-bold shadow-xl backdrop-blur-md">
+                    {bgExportUi.finishedToast}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Floating Lock/Unlock & 1-Tap Climber Switcher inside Fullscreen Camera */}
+            {isCameraExpanded && !isCalibrating && !editingLine && !finishedRun && (
               <div
                 data-no-gesture="true"
                 onClick={(e) => e.stopPropagation()}
                 className="absolute bottom-3 left-3 z-30 flex flex-wrap items-center gap-1.5"
               >
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (lockedClimber) {
-                      unlockClimber();
-                    } else {
-                      setIsPickingClimber((prev) => !prev);
-                    }
-                  }}
-                  className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold border shadow-lg backdrop-blur-sm flex items-center gap-1.5 transition-all active:scale-95 ${
-                    lockedClimber
-                      ? 'bg-emerald-950/85 text-emerald-200 border-emerald-400/60'
-                      : isPickingClimber
-                      ? 'bg-amber-500 text-slate-950 border-amber-200 animate-pulse'
-                      : 'bg-slate-950/85 hover:bg-slate-900 text-white border-white/20'
-                  }`}
-                  title="Klepněte na osobu v obraze pro zafixování sledování"
-                >
-                  {lockedClimber ? <Lock className="w-3.5 h-3.5 text-emerald-400" /> : <Unlock className="w-3.5 h-3.5" />}
-                  <span>
-                    {lockedClimber
-                      ? 'Zafixováno · Odemknout'
-                      : isPickingClimber
-                      ? 'Klepni na osobu...'
-                      : 'Zafixovat osobu'}
-                  </span>
-                </button>
+                {showClimberSwitcher && (
+                  <div className="absolute bottom-full mb-2 left-0 w-64 p-2 rounded-2xl bg-slate-950/95 border border-white/20 backdrop-blur-md shadow-2xl space-y-1.5">
+                    <div className="text-[10px] font-bold text-slate-400 uppercase px-1">Přepnout lezce</div>
+                    <div className="max-h-40 overflow-y-auto space-y-1">
+                      {climberProfiles.map((p) => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => handleSwitchClimber(p.id)}
+                          className={`w-full px-2.5 py-1.5 rounded-xl text-left text-xs font-bold flex items-center justify-between ${
+                            p.id === profile.id
+                              ? 'bg-red-600 text-white'
+                              : 'bg-slate-900 hover:bg-slate-800 text-slate-200'
+                          }`}
+                        >
+                          <span className="truncate">
+                            {p.flagEmoji || '🧗'} {p.name}
+                          </span>
+                          {p.id === profile.id && <Check className="w-3.5 h-3.5 shrink-0" />}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 <button
                   type="button"
-                  onClick={toggleIfscStartWithCamera}
-                  className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold border shadow-lg backdrop-blur-sm flex items-center gap-1 transition-all active:scale-95 ${
-                    ifscStartWithCamera
-                      ? 'bg-amber-950/85 text-amber-200 border-amber-400/60'
-                      : 'bg-slate-950/85 hover:bg-slate-900 text-slate-300 border-white/20'
-                  }`}
-                  title="Zapnout/vypnout IFSC zvukový odpočet a hlídání ulitého startu"
+                  disabled={isRunning}
+                  onClick={() => {
+                    setClimberProfiles(getAllProfiles());
+                    setShowClimberSwitcher((prev) => !prev);
+                  }}
+                  className="px-2.5 py-1.5 rounded-xl text-[11px] font-bold border border-white/20 bg-slate-950/85 hover:bg-slate-900 text-white shadow-lg backdrop-blur-sm flex items-center gap-1.5 transition-all active:scale-95 disabled:opacity-50"
+                  title="Rychle přepnout lezce pro další pokus"
                 >
-                  <Zap className={`w-3.5 h-3.5 ${ifscStartWithCamera ? 'text-amber-400' : 'text-slate-400'}`} />
-                  <span>{ifscStartWithCamera ? 'IFSC: ZAP' : 'IFSC: VYP'}</span>
+                  <span>{profile.flagEmoji || '🧗'}</span>
+                  <span className="max-w-[90px] truncate">{profile.name}</span>
+                  <ChevronDown className="w-3 h-3 text-slate-400" />
                 </button>
+
+                {isAiCameraMode && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (lockedClimber) {
+                        unlockClimber();
+                      } else {
+                        setIsPickingClimber((prev) => !prev);
+                      }
+                    }}
+                    className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold border shadow-lg backdrop-blur-sm flex items-center gap-1.5 transition-all active:scale-95 ${
+                      lockedClimber
+                        ? 'bg-emerald-950/85 text-emerald-200 border-emerald-400/60'
+                        : isPickingClimber
+                        ? 'bg-amber-500 text-slate-950 border-amber-200 animate-pulse'
+                        : 'bg-slate-950/85 hover:bg-slate-900 text-white border-white/20'
+                    }`}
+                    title="Klepněte na osobu v obraze pro zafixování sledování"
+                  >
+                    {lockedClimber ? (
+                      <Lock className="w-3.5 h-3.5 text-emerald-400" />
+                    ) : (
+                      <Unlock className="w-3.5 h-3.5" />
+                    )}
+                    <span>
+                      {lockedClimber
+                        ? 'Zafixováno · Odemknout'
+                        : isPickingClimber
+                        ? 'Klepni na osobu...'
+                        : 'Zafixovat osobu'}
+                    </span>
+                  </button>
+                )}
               </div>
             )}
 
             {/* AI Kamera Overlay ONLY: Aligned 1:1 with rendered video pixels */}
-            {isAiCameraMode && showGuides && (
+            {isAiCameraMode && (showGuides || isCalibrating) && (
               <div
                 ref={lineDragBoxRef}
                 style={{
@@ -4965,7 +5415,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                 {isPostRollRecording && (
                   <div className="flex items-center justify-between gap-2 px-2.5 py-1 rounded-xl bg-amber-950/70 border border-amber-400/40 text-amber-200 text-[11px] font-bold">
                     <span className="animate-pulse">
-                      🎬 Nahrávám +3s po dohmatu ({postRollRemainingSec}s)...
+                      🎬 Nahrávám +{videoTrimMarginSec}s po dohmatu ({postRollRemainingSec}s)...
                     </span>
                     <button
                       type="button"
@@ -5001,45 +5451,24 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-bold">
-                    {(finishedRun.videoUrl || isPostRollRecording) &&
-                      ((finishedRun.poseTimeline && finishedRun.poseTimeline.length > 0) || isAiCameraMode) && (
-                        <button
-                          type="button"
-                          onClick={() => setIncludePoseInVideo((prev) => !prev)}
-                          className={`px-2 py-1.5 rounded-xl border flex items-center gap-1 transition-all ${
-                            includePoseInVideo
-                              ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200'
-                              : 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
-                          }`}
-                          title="Volitelně zaznamenat do videa tečky pozice ruky, těla a nohy"
-                        >
-                          <span className="flex items-center gap-0.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
-                            <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                          </span>
-                          <span>{includePoseInVideo ? 'AI body ✓' : 'AI body'}</span>
-                        </button>
-                      )}
                     <button
                       type="button"
-                      onClick={() => void handleGestureSave()}
-                      disabled={isExportingVideo}
-                      className="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white flex items-center gap-1 disabled:opacity-60"
+                      onClick={() => enqueueRunSaveAndReadyNext('download')}
+                      className="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white flex items-center gap-1"
+                      title="Zařadit video k uložení na pozadí a ihned uvolnit časomíru pro dalšího lezce"
                     >
                       <Download className="w-3.5 h-3.5" />
                       <span>Uložit</span>
                     </button>
-                    {(finishedRun.videoUrl || isPostRollRecording) && (
+                    {recordVideoOnRun && (
                       <button
                         type="button"
-                        onClick={() => void handleShareVideoToCloud()}
-                        disabled={isExportingVideo}
-                        className="px-2.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white flex items-center gap-1 disabled:opacity-60"
-                        title="Odeslat video s časem na Google Disk nebo OneDrive"
+                        onClick={() => enqueueRunSaveAndReadyNext('share')}
+                        className="px-2.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white flex items-center gap-1"
+                        title="Připravit video na pozadí pro Disk a ihned uvolnit časomíru"
                       >
                         <Cloud className="w-3.5 h-3.5" />
-                        <span>{isExportingVideo ? '...' : 'Disk'}</span>
+                        <span>Disk</span>
                       </button>
                     )}
                     <button
@@ -5085,7 +5514,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                     </button>
                   </div>
                   <p className="text-[11px] text-slate-300 leading-relaxed">
-                    Stáhněte video s běžícím časem a nahrajte ho do svého cloudového úložiště:
+                    Stáhněte video na pozadí a nahrajte ho do svého cloudového úložiště:
                   </p>
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <a
@@ -5111,8 +5540,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                     <button
                       type="button"
                       onClick={() => void handleDownloadVideoDirect()}
-                      disabled={isExportingVideo}
-                      className="font-bold text-emerald-400 hover:underline flex items-center gap-1 disabled:opacity-60"
+                      className="font-bold text-emerald-400 hover:underline flex items-center gap-1"
                     >
                       <Download className="w-3.5 h-3.5" />
                       <span>Stáhnout video do zařízení</span>
@@ -5130,8 +5558,8 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
             )}
           </div>
 
-          {/* Helper Banner OUTSIDE the video frame (no hint strip in fullscreen expanded mode) */}
-          {!isCameraExpanded && (
+          {/* Helper Banner OUTSIDE the video frame (controlled via Settings showTimerHints) */}
+          {!isCameraExpanded && showTimerHints && (
             <div className="flex flex-col gap-1.5 p-3 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-300">
               <div className="flex flex-col sm:flex-row items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
@@ -5452,12 +5880,12 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
             );
           })()}
 
-          {/* Post-Roll Recording Banner while +3s finish buffer captures */}
+          {/* Post-Roll Recording Banner while post-roll finish buffer captures */}
           {isPostRollRecording && !finishedRun.videoUrl && (
             <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
               <div className="p-2.5 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 flex items-center justify-between gap-2 text-xs font-bold text-amber-800 dark:text-amber-200">
                 <span className="animate-pulse">
-                  🎬 Dokončuji +3s videozáznamu po dohmatu ({postRollRemainingSec}s)...
+                  🎬 Dokončuji +{videoTrimMarginSec}s videozáznamu po dohmatu ({postRollRemainingSec}s)...
                 </span>
                 <button
                   type="button"
@@ -5476,7 +5904,11 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-bold">
                 <span className="text-slate-900 dark:text-white flex items-center gap-1.5">
                   <Video className="w-4 h-4 text-red-600" />
-                  <span>Videozáznam (-3s před startem / +3s po cíli)</span>
+                  <span>
+                    {videoTrimMarginSec > 0
+                      ? `Videozáznam (-${videoTrimMarginSec}s před startem / +${videoTrimMarginSec}s po cíli)`
+                      : 'Videozáznam'}
+                  </span>
                 </span>
 
                 {showDeleteVideoConfirm ? (
@@ -5501,44 +5933,21 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                   </div>
                 ) : (
                   <div className="flex flex-wrap items-center gap-1.5">
-                    {((finishedRun.poseTimeline && finishedRun.poseTimeline.length > 0) ||
-                      (recordedPoseDataMapRef.current.get(finishedRun.id)?.poseTimeline?.length || 0) > 0) && (
-                      <button
-                        type="button"
-                        onClick={() => setIncludePoseInVideo((prev) => !prev)}
-                        className={`px-2.5 py-1 rounded-xl border transition-all flex items-center gap-1.5 text-[11px] font-bold ${
-                          includePoseInVideo
-                            ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-400 text-emerald-700 dark:text-emerald-300'
-                            : 'bg-slate-100 dark:bg-slate-800 border-transparent text-slate-600 dark:text-slate-300 hover:bg-slate-200'
-                        }`}
-                        title="Volitelně vložit do videa sledování pozice ruky, těla a nohy"
-                      >
-                        <span className="flex items-center gap-0.5">
-                          <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
-                          <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                        </span>
-                        <span>{includePoseInVideo ? 'S AI body ✓' : 'Vložit AI body'}</span>
-                      </button>
-                    )}
-
                     <button
                       type="button"
-                      onClick={() => void handleDownloadVideoDirect()}
-                      disabled={isExportingVideo}
-                      className="px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:text-red-600 hover:bg-slate-200 transition-colors flex items-center gap-1 text-[11px] font-bold disabled:opacity-60"
-                      title="Uložit video s běžícím časem v pravém horním rohu do zařízení"
+                      onClick={() => enqueueRunSaveAndReadyNext('download')}
+                      className="px-2.5 py-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white transition-colors flex items-center gap-1 text-[11px] font-bold"
+                      title="Uložit video na pozadí do zařízení a uvolnit časomíru pro dalšího lezce"
                     >
                       <Download className="w-3.5 h-3.5" />
-                      <span>{isExportingVideo ? 'Připravuji...' : '💾 Do zařízení'}</span>
+                      <span>💾 Do zařízení</span>
                     </button>
 
                     <button
                       type="button"
-                      onClick={handleShareVideoToCloud}
-                      disabled={isExportingVideo}
-                      className="px-2.5 py-1 rounded-xl bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors flex items-center gap-1 text-[11px] font-bold disabled:opacity-60"
-                      title="Uložit nebo sdílet video s časem na Google Disk či OneDrive"
+                      onClick={() => enqueueRunSaveAndReadyNext('share')}
+                      className="px-2.5 py-1 rounded-xl bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition-colors flex items-center gap-1 text-[11px] font-bold"
+                      title="Připravit na pozadí a sdílet na Google Disk či OneDrive"
                     >
                       <Cloud className="w-3.5 h-3.5" />
                       <span>☁️ Disk / OneDrive</span>
@@ -5674,84 +6083,87 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                     );
                   })()}
 
-                {/* Top-right Live Running / Final Chrono Overlay */}
-                {(() => {
-                  const vid = playbackVideoRef.current;
-                  const tMeta =
-                    finishedRun.videoTiming || recordedPoseDataMapRef.current.get(finishedRun.id)?.timing;
-                  let displaySec = finishedRun.totalTime;
-                  let isPreStart = false;
-                  let isAtFinish = true;
+                {/* Top-right Live Running / Final Chrono Overlay (respects videoTimeMode setting) */}
+                {videoTimeMode !== 'none' &&
+                  (() => {
+                    const vid = playbackVideoRef.current;
+                    const tMeta =
+                      finishedRun.videoTiming || recordedPoseDataMapRef.current.get(finishedRun.id)?.timing;
+                    let displaySec = finishedRun.totalTime;
+                    let isPreStart = false;
+                    let isAtFinish = true;
 
-                  if (tMeta) {
-                    const showLive = isPlaybackPlaying || playbackVideoSec > tMeta.preRollStartSec + 0.01;
-                    if (!showLive || playbackVideoSec >= tMeta.climbEndSec) {
-                      displaySec = finishedRun.totalTime;
-                      isAtFinish = true;
-                    } else if (playbackVideoSec < tMeta.climbStartSec) {
-                      displaySec = 0;
-                      isPreStart = true;
-                      isAtFinish = false;
-                    } else {
-                      const span = Math.max(0.05, tMeta.climbEndSec - tMeta.climbStartSec);
-                      displaySec = Math.min(
-                        finishedRun.totalTime,
-                        Math.max(0, ((playbackVideoSec - tMeta.climbStartSec) / span) * finishedRun.totalTime)
-                      );
-                      isAtFinish = displaySec >= finishedRun.totalTime - 0.012;
+                    if (videoTimeMode === 'running') {
+                      if (tMeta) {
+                        const showLive = isPlaybackPlaying || playbackVideoSec > tMeta.preRollStartSec + 0.01;
+                        if (!showLive || playbackVideoSec >= tMeta.climbEndSec) {
+                          displaySec = finishedRun.totalTime;
+                          isAtFinish = true;
+                        } else if (playbackVideoSec < tMeta.climbStartSec) {
+                          displaySec = 0;
+                          isPreStart = true;
+                          isAtFinish = false;
+                        } else {
+                          const span = Math.max(0.05, tMeta.climbEndSec - tMeta.climbStartSec);
+                          displaySec = Math.min(
+                            finishedRun.totalTime,
+                            Math.max(0, ((playbackVideoSec - tMeta.climbStartSec) / span) * finishedRun.totalTime)
+                          );
+                          isAtFinish = displaySec >= finishedRun.totalTime - 0.012;
+                        }
+                      } else {
+                        const vidDur = vid?.duration;
+                        let mappedSec = playbackVideoSec;
+                        if (vidDur && Number.isFinite(vidDur) && vidDur > 0.25 && vidDur < finishedRun.totalTime) {
+                          mappedSec = (playbackVideoSec / vidDur) * finishedRun.totalTime;
+                        }
+                        const showLiveRunning = isPlaybackPlaying || (playbackVideoSec > 0.01 && !vid?.ended);
+                        displaySec = showLiveRunning
+                          ? Math.min(finishedRun.totalTime, Math.max(0, mappedSec))
+                          : finishedRun.totalTime;
+                        isAtFinish = !showLiveRunning || displaySec >= finishedRun.totalTime - 0.012;
+                      }
                     }
-                  } else {
-                    const vidDur = vid?.duration;
-                    let mappedSec = playbackVideoSec;
-                    if (vidDur && Number.isFinite(vidDur) && vidDur > 0.25 && vidDur < finishedRun.totalTime) {
-                      mappedSec = (playbackVideoSec / vidDur) * finishedRun.totalTime;
-                    }
-                    const showLiveRunning = isPlaybackPlaying || (playbackVideoSec > 0.01 && !vid?.ended);
-                    displaySec = showLiveRunning
-                      ? Math.min(finishedRun.totalTime, Math.max(0, mappedSec))
-                      : finishedRun.totalTime;
-                    isAtFinish = !showLiveRunning || displaySec >= finishedRun.totalTime - 0.012;
-                  }
 
-                  const formatted = `${Math.floor(displaySec)
-                    .toString()
-                    .padStart(2, '0')}.${Math.floor((displaySec % 1) * 1000)
-                    .toString()
-                    .padStart(3, '0')} s`;
+                    const formatted = `${Math.floor(displaySec)
+                      .toString()
+                      .padStart(2, '0')}.${Math.floor((displaySec % 1) * 1000)
+                      .toString()
+                      .padStart(3, '0')} s`;
 
-                  return (
-                    <div
-                      className={`pointer-events-none absolute top-3 right-3 px-2.5 py-1.5 rounded-xl bg-slate-950/85 border border-l-4 shadow-lg backdrop-blur-sm ${
-                        isAtFinish
-                          ? 'border-emerald-400/50 border-l-emerald-500'
-                          : isPreStart
-                          ? 'border-amber-400/50 border-l-amber-500'
-                          : 'border-white/20 border-l-red-500'
-                      }`}
-                    >
+                    return (
                       <div
-                        className={`text-[9px] font-bold uppercase tracking-wider leading-tight ${
+                        className={`pointer-events-none absolute top-3 right-3 px-2.5 py-1.5 rounded-xl bg-slate-950/85 border border-l-4 shadow-lg backdrop-blur-sm ${
                           isAtFinish
-                            ? 'text-emerald-300'
+                            ? 'border-emerald-400/50 border-l-emerald-500'
                             : isPreStart
-                            ? 'text-amber-300'
-                            : 'text-slate-300'
+                            ? 'border-amber-400/50 border-l-amber-500'
+                            : 'border-white/20 border-l-red-500'
                         }`}
                       >
-                        {(finishedRun.climberName || 'LEZEC').toUpperCase()} ·{' '}
-                        {finishedRun.routeCategory === 'adults_15m'
-                          ? '15m'
-                          : finishedRun.routeCategory === 'youth_u15'
-                          ? '10m U15'
-                          : '10m U13'}
-                        {isAtFinish ? ' · CÍL' : isPreStart ? ' · START' : ''}
+                        <div
+                          className={`text-[9px] font-bold uppercase tracking-wider leading-tight ${
+                            isAtFinish
+                              ? 'text-emerald-300'
+                              : isPreStart
+                              ? 'text-amber-300'
+                              : 'text-slate-300'
+                          }`}
+                        >
+                          {(finishedRun.climberName || 'LEZEC').toUpperCase()} ·{' '}
+                          {finishedRun.routeCategory === 'adults_15m'
+                            ? '15m'
+                            : finishedRun.routeCategory === 'youth_u15'
+                            ? '10m U15'
+                            : '10m U13'}
+                          {isAtFinish ? ' · CÍL' : isPreStart ? ' · START' : ''}
+                        </div>
+                        <div className="text-lg sm:text-xl font-mono font-black text-white tabular-nums leading-tight">
+                          {formatted}
+                        </div>
                       </div>
-                      <div className="text-lg sm:text-xl font-mono font-black text-white tabular-nums leading-tight">
-                        {formatted}
-                      </div>
-                    </div>
-                  );
-                })()}
+                    );
+                  })()}
               </div>
 
               {/* Slow Motion Speed Controls */}

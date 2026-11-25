@@ -365,3 +365,92 @@ function updateProfilePB(newPb: number, category: RouteCategory): void {
     saveUserProfile(profile);
   }
 }
+
+export type VideoTimeOverlayMode = 'running' | 'final' | 'none';
+export type AiSensitivityPreset = 'low' | 'medium' | 'high';
+export type CameraFitMode = 'contain' | 'cover';
+export type DefaultStartMode = 'manual' | 'ifsc_countdown' | 'camera_motion' | 'sound_trigger';
+
+export interface AppSettings {
+  recordVideoOnRun: boolean;
+  videoTimeMode: VideoTimeOverlayMode;
+  videoFps: 30 | 60;
+  includePoseInVideo: boolean;
+  videoTrimMarginSec: 0 | 1 | 3;
+  autoSaveVideoOnFinish: boolean;
+
+  defaultStartMode: DefaultStartMode;
+  ifscStartWithCamera: boolean;
+  sensitivityPreset: AiSensitivityPreset;
+  showGuides: boolean;
+  cameraFit: CameraFitMode;
+  defaultFacingMode: 'environment' | 'user';
+  showTimerHints: boolean;
+}
+
+const APP_SETTINGS_KEY = 'fifteen_app_settings_v1';
+
+export const DEFAULT_APP_SETTINGS: AppSettings = {
+  recordVideoOnRun: true,
+  videoTimeMode: 'running',
+  videoFps: 60,
+  includePoseInVideo: false,
+  videoTrimMarginSec: 3,
+  autoSaveVideoOnFinish: false,
+
+  defaultStartMode: 'manual',
+  ifscStartWithCamera: false,
+  sensitivityPreset: 'medium',
+  showGuides: true,
+  cameraFit: 'contain',
+  defaultFacingMode: 'environment',
+  showTimerHints: true,
+};
+
+export function getAppSettings(): AppSettings {
+  if (typeof window === 'undefined') return DEFAULT_APP_SETTINGS;
+  try {
+    const raw = localStorage.getItem(APP_SETTINGS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return {
+        ...DEFAULT_APP_SETTINGS,
+        ...parsed,
+        videoFps: parsed.videoFps === 30 ? 30 : 60,
+        videoTrimMarginSec:
+          parsed.videoTrimMarginSec === 0 || parsed.videoTrimMarginSec === 1 ? parsed.videoTrimMarginSec : 3,
+        videoTimeMode:
+          parsed.videoTimeMode === 'final' || parsed.videoTimeMode === 'none' ? parsed.videoTimeMode : 'running',
+        sensitivityPreset:
+          parsed.sensitivityPreset === 'low' || parsed.sensitivityPreset === 'high'
+            ? parsed.sensitivityPreset
+            : 'medium',
+        cameraFit: parsed.cameraFit === 'cover' ? 'cover' : 'contain',
+        defaultFacingMode: parsed.defaultFacingMode === 'user' ? 'user' : 'environment',
+        defaultStartMode:
+          parsed.defaultStartMode === 'ifsc_countdown' ||
+          parsed.defaultStartMode === 'camera_motion' ||
+          parsed.defaultStartMode === 'sound_trigger'
+            ? parsed.defaultStartMode
+            : 'manual',
+      };
+    }
+    const legacyIfsc = localStorage.getItem('fifteen_ai_cam_ifsc_v1') === 'true';
+    const initial = { ...DEFAULT_APP_SETTINGS, ifscStartWithCamera: legacyIfsc };
+    localStorage.setItem(APP_SETTINGS_KEY, JSON.stringify(initial));
+    return initial;
+  } catch {
+    return DEFAULT_APP_SETTINGS;
+  }
+}
+
+export function saveAppSettings(settings: AppSettings): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(APP_SETTINGS_KEY, JSON.stringify(settings));
+    localStorage.setItem('fifteen_ai_cam_ifsc_v1', settings.ifscStartWithCamera ? 'true' : 'false');
+  } catch {
+    // ignore
+  }
+}
+
