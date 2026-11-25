@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import confetti from 'canvas-confetti';
+import { FilesetResolver, PoseLandmarker, type NormalizedLandmark } from '@mediapipe/tasks-vision';
 import {
   Camera,
   Play,
@@ -144,12 +145,19 @@ interface TrackedPoint {
   y: number;
 }
 
+interface SkeletonSegment {
+  from: TrackedPoint;
+  to: TrackedPoint;
+}
+
 interface TrackedPose {
   active: boolean;
   hands: TrackedPoint;
   body: TrackedPoint;
   foot: TrackedPoint;
   confidence: number;
+  source?: 'mediapipe' | 'fallback';
+  skeleton?: SkeletonSegment[];
 }
 
 const EMPTY_POSE: TrackedPose = {
@@ -158,7 +166,26 @@ const EMPTY_POSE: TrackedPose = {
   body: { x: 50, y: 50 },
   foot: { x: 50, y: 80 },
   confidence: 0,
+  source: undefined,
+  skeleton: undefined,
 };
+
+const POSE_BONE_PAIRS: [number, number][] = [
+  [11, 12],
+  [11, 13],
+  [13, 15],
+  [12, 14],
+  [14, 16],
+  [11, 23],
+  [12, 24],
+  [23, 24],
+  [23, 25],
+  [25, 27],
+  [27, 31],
+  [24, 26],
+  [26, 28],
+  [28, 32],
+];
 
 export const SmartTimer: React.FC<SmartTimerProps> = ({
   onRunFinished,
@@ -237,6 +264,7 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
 
   // Real-time AI Climber Pose Tracking (Green = Foot, Blue = Torso, Red = Hands)
   const [trackedPose, setTrackedPose] = useState<TrackedPose>(EMPTY_POSE);
+  const [poseEngineState, setPoseEngineState] = useState<'idle' | 'loading' | 'mediapipe' | 'fallback'>('idle');
   const [wallBgReady, setWallBgReady] = useState<boolean>(false);
   const [lastLineTrigger, setLastLineTrigger] = useState<'start' | 'mid' | 'finish' | null>(null);
 
@@ -858,6 +886,9 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     }
   }, []);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const poseLandmarkerRef = useRef<PoseLandmarker | null>(null);
+  const poseInitInFlightRef = useRef<boolean>(false);
+  const lastMediaPipeTsRef = useRef<number>(0);
   const prevImageDataRef = useRef<Uint8ClampedArray | null>(null);
   const bgFrameRef = useRef<Uint8ClampedArray | null>(null);
   const motionHeatmapRef = useRef<Float32Array | null>(null);
@@ -1687,11 +1718,256 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
     };
   }, [micActive]);
 
-  // Stable AI Kamera Vision Loop (runs uninterrupted at ~30fps — NEVER restarts on elapsedMs ticks!)
+  // Initialize MediaPipe PoseLandmarker neural skeleton model when AI Kamera is active
+  useEffect(() => {
+    if (!cameraActive || !isAiCameraMode) return;
+    if (poseLandmarkerRef.current || poseInitInFlightRef.current) return;
+
+    let cancelled = false;
+    poseInitInFlightRef.current = true;
+    setPoseEngineState('loading');
+
+    const initPoseLandmarker = async () => {
+      try {
+        const vision = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
+        const preset = sensorStateRef.current.sensitivityPreset;
+        const minConf = preset === 'high' ? 0.25 : preset === 'low' ? 0.55 : 0.35;
+
+        const modelCandidates = [
+          {
+            url: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task',
+            delegate: 'GPU' as const,
+          },
+          {
+            url: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task',
+            delegate: 'CPU' as const,
+          },
+          {
+            url: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+            delegate: 'CPU' as const,
+          },
+        ];
+
+        let created: PoseLandmarker | null = null;
+        for (const candidate of modelCandidates) {
+          if (cancelled) break;
+          try {
+            created = await PoseLandmarker.createFromOptions(vision, {
+              baseOptions: {
+                modelAssetPath: candidate.url,
+                delegate: candidate.delegate,
+              },
+              runningMode: 'VIDEO',
+              numPoses: 1,
+              minPoseDetectionConfidence: minConf,
+              minPosePresenceConfidence: minConf,
+              minTrackingConfidence: minConf,
+            });
+            break;
+          } catch {
+            // Try next model/delegate
+          }
+        }
+
+        if (cancelled) {
+          created?.close();
+          return;
+        }
+
+        if (created) {
+          poseLandmarkerRef.current = created;
+          setPoseEngineState('mediapipe');
+        } else {
+          setPoseEngineState('fallback');
+        }
+      } catch {
+        if (!cancelled) {
+          setPoseEngineState('fallback');
+        }
+      } finally {
+        poseInitInFlightRef.current = false;
+      }
+    };
+
+    void initPoseLandmarker();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [cameraActive, isAiCameraMode]);
+
+  // Dynamically update MediaPipe confidence when user switches sensitivity preset
+  useEffect(() => {
+    const landmarker = poseLandmarkerRef.current;
+    if (!landmarker) return;
+    const minConf = sensitivityPreset === 'high' ? 0.25 : sensitivityPreset === 'low' ? 0.55 : 0.35;
+    landmarker
+      .setOptions({
+        minPoseDetectionConfidence: minConf,
+        minPosePresenceConfidence: minConf,
+        minTrackingConfidence: minConf,
+      })
+      .catch(() => {});
+  }, [sensitivityPreset]);
+
+  // Stable AI Kamera Vision Loop (MediaPipe 33-Landmark Anatomical Skeleton + CV Fallback)
   useEffect(() => {
     if (!cameraActive) return;
 
     let stopped = false;
+
+    const triggerLineEvents = (nextPose: TrackedPose, prevFootY: number | null, nowMs: number) => {
+      const st = sensorStateRef.current;
+      const liveElapsedMs = startTimeRef.current > 0 ? nowMs - startTimeRef.current : 0;
+
+      // LINE 1 TRIGGER (BOTTOM): Green Foot dot crosses upward past startZoneY -> START CHRONO
+      if (!st.isRunning && st.countdownState === 'armed') {
+        if (nextPose.foot.y >= st.startZoneY - 2.0) {
+          footArmedBelowLineRef.current = true;
+        }
+        const crossedUpward =
+          (prevFootY !== null && prevFootY >= st.startZoneY - 1.5 && nextPose.foot.y < st.startZoneY - 0.5) ||
+          (footArmedBelowLineRef.current && nextPose.foot.y < st.startZoneY - 1.0);
+
+        if (crossedUpward) {
+          footArmedBelowLineRef.current = false;
+          setLastLineTrigger('start');
+          setTimeout(() => setLastLineTrigger(null), 1200);
+          playIFSCStartTone();
+          st.startTimerNow(0.125);
+        }
+      }
+
+      // LINE 2 TRIGGER (MIDDLE): Red Hands dot crosses upward past midZoneY -> RECORD SPLIT
+      if (st.isRunning && liveElapsedMs > 250 && !midLineTriggeredRef.current) {
+        if (nextPose.hands.y <= st.midZoneY + 0.5) {
+          midLineTriggeredRef.current = true;
+          const splitSec = parseFloat((liveElapsedMs / 1000).toFixed(2));
+          midSplitTimeRef.current = splitSec;
+          split1TimeRef.current = splitSec;
+          setMidSplitTime(splitSec);
+          setSplit1Time(splitSec);
+          playSplitChime();
+          setLastLineTrigger('mid');
+          setTimeout(() => setLastLineTrigger(null), 1200);
+        }
+      }
+
+      // LINE 3 TRIGGER (TOP): Red Hands dot crosses/exceeds finishZoneY -> STOP CHRONO & SAVE
+      if (st.isRunning && liveElapsedMs > 900) {
+        if (nextPose.hands.y <= st.finishZoneY + 0.5) {
+          setLastLineTrigger('finish');
+          setTimeout(() => setLastLineTrigger(null), 1200);
+          st.stopTimer();
+        }
+      }
+    };
+
+    const extractFromLandmarks = (lms: NormalizedLandmark[]): TrackedPose | null => {
+      if (!lms || lms.length < 25) return null;
+
+      const isVisible = (idx: number, minVis = 0.14) => {
+        const pt = lms[idx];
+        return pt && (pt.visibility === undefined || pt.visibility >= minVis);
+      };
+
+      const clampPct = (v: number) => Math.max(1, Math.min(99, v * 100));
+
+      // 1) Hands (Ruka): pick highest visible reaching hand (wrists 15/16, pinkies 17/18, index 19/20, fallback elbows 13/14)
+      const handIndices = [19, 20, 17, 18, 15, 16];
+      let bestHand: NormalizedLandmark | null = null;
+      for (const idx of handIndices) {
+        if (isVisible(idx, 0.14)) {
+          const pt = lms[idx];
+          if (!bestHand || pt.y < bestHand.y) bestHand = pt;
+        }
+      }
+      if (!bestHand) {
+        for (const idx of [13, 14]) {
+          if (isVisible(idx, 0.12)) {
+            const pt = lms[idx];
+            if (!bestHand || pt.y < bestHand.y) bestHand = pt;
+          }
+        }
+      }
+
+      // 2) Body/Torso (Tělo): average of visible shoulders (11,12) and hips (23,24)
+      const torsoIndices = [11, 12, 23, 24];
+      let sumBodyX = 0;
+      let sumBodyY = 0;
+      let bodyCount = 0;
+      for (const idx of torsoIndices) {
+        if (isVisible(idx, 0.14)) {
+          sumBodyX += lms[idx].x;
+          sumBodyY += lms[idx].y;
+          bodyCount++;
+        }
+      }
+
+      // 3) Foot (Noha): pick lowest/trailing visible foot point (toes 31/32, heels 29/30, ankles 27/28, fallback knees 25/26)
+      const footIndices = [31, 32, 29, 30, 27, 28];
+      let bestFoot: NormalizedLandmark | null = null;
+      for (const idx of footIndices) {
+        if (isVisible(idx, 0.12)) {
+          const pt = lms[idx];
+          if (!bestFoot || pt.y > bestFoot.y) bestFoot = pt;
+        }
+      }
+      if (!bestFoot) {
+        for (const idx of [25, 26]) {
+          if (isVisible(idx, 0.12)) {
+            const pt = lms[idx];
+            if (!bestFoot || pt.y > bestFoot.y) bestFoot = pt;
+          }
+        }
+      }
+
+      if (!bestHand && bodyCount === 0 && !bestFoot) return null;
+
+      const rawBodyX = bodyCount > 0 ? clampPct(sumBodyX / bodyCount) : clampPct((bestHand || bestFoot)!.x);
+      const rawBodyY = bodyCount > 0 ? clampPct(sumBodyY / bodyCount) : clampPct((bestHand || bestFoot)!.y);
+      const rawHandsX = bestHand ? clampPct(bestHand.x) : rawBodyX;
+      const rawHandsY = bestHand ? clampPct(bestHand.y) : Math.max(2, rawBodyY - 14);
+      const rawFootX = bestFoot ? clampPct(bestFoot.x) : rawBodyX;
+      const rawFootY = bestFoot ? clampPct(bestFoot.y) : Math.min(98, rawBodyY + 18);
+
+      const prev = trackedPoseRef.current;
+      const usePrev = prev.active && prev.source === 'mediapipe';
+      const alpha = usePrev ? 0.72 : 1.0;
+      const lerp = (a: number, b: number) => a + (b - a) * alpha;
+
+      const skeleton: SkeletonSegment[] = [];
+      for (const [aIdx, bIdx] of POSE_BONE_PAIRS) {
+        if (isVisible(aIdx, 0.18) && isVisible(bIdx, 0.18)) {
+          skeleton.push({
+            from: { x: clampPct(lms[aIdx].x), y: clampPct(lms[aIdx].y) },
+            to: { x: clampPct(lms[bIdx].x), y: clampPct(lms[bIdx].y) },
+          });
+        }
+      }
+
+      const visValues = [11, 12, 15, 16, 23, 24, 27, 28].map((i) => lms[i]?.visibility ?? 0.5);
+      const avgVis = visValues.reduce((acc, v) => acc + v, 0) / visValues.length;
+
+      return {
+        active: true,
+        hands: {
+          x: usePrev ? lerp(prev.hands.x, rawHandsX) : rawHandsX,
+          y: usePrev ? lerp(prev.hands.y, rawHandsY) : rawHandsY,
+        },
+        body: {
+          x: usePrev ? lerp(prev.body.x, rawBodyX) : rawBodyX,
+          y: usePrev ? lerp(prev.body.y, rawBodyY) : rawBodyY,
+        },
+        foot: {
+          x: usePrev ? lerp(prev.foot.x, rawFootX) : rawFootX,
+          y: usePrev ? lerp(prev.foot.y, rawFootY) : rawFootY,
+        },
+        confidence: Math.min(100, Math.round(avgVis * 100)),
+        source: 'mediapipe',
+        skeleton,
+      };
+    };
 
     const processCameraFrame = () => {
       if (stopped) return;
@@ -1699,279 +1975,267 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       const video = videoRef.current;
       const canvas = canvasRef.current;
 
-      if (st.startMode === 'camera_motion' && video && canvas && video.readyState >= 2) {
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
-        if (ctx) {
-          const W = 120;
-          const H = 180;
-          canvas.width = W;
-          canvas.height = H;
-          ctx.drawImage(video, 0, 0, W, H);
+      if (st.startMode !== 'camera_motion' || !video || video.readyState < 2 || video.videoWidth === 0) {
+        return;
+      }
 
-          try {
-            const frame = ctx.getImageData(0, 0, W, H);
-            const data = frame.data;
-            const totalPixels = W * H;
-            const nowMs = performance.now();
+      const nowMs = performance.now();
 
-            // Wait ~500ms after camera boot so auto-exposure/white-balance stabilizes before locking wall background
-            const cameraSettled = nowMs - cameraStartTsRef.current > 500;
-            if ((!bgFrameRef.current || bgFrameRef.current.length !== data.length) && cameraSettled) {
-              bgFrameRef.current = new Uint8ClampedArray(data);
-              motionHeatmapRef.current = new Float32Array(totalPixels);
-              setWallBgReady(true);
-            }
-
-            if (!motionHeatmapRef.current || motionHeatmapRef.current.length !== totalPixels) {
-              motionHeatmapRef.current = new Float32Array(totalPixels);
-            }
-
-            const bgData = bgFrameRef.current;
-            const prevData = prevImageDataRef.current;
-            const heatmap = motionHeatmapRef.current;
-
-            const bgThresh = st.sensitivityPreset === 'high' ? 32 : st.sensitivityPreset === 'low' ? 58 : 44;
-            const motThresh = st.sensitivityPreset === 'high' ? 22 : st.sensitivityPreset === 'low' ? 44 : 32;
-
-            let movingPixelsCount = 0;
-
-            // Step A: Hybrid static-background silhouette + temporal motion persistence
-            for (let p = 0; p < totalPixels; p++) {
-              const idx = p * 4;
-              let diffBg = 0;
-              if (bgData && bgData.length === data.length) {
-                diffBg =
-                  Math.abs(data[idx] - bgData[idx]) +
-                  Math.abs(data[idx + 1] - bgData[idx + 1]) +
-                  Math.abs(data[idx + 2] - bgData[idx + 2]);
-              }
-
-              let diffMot = 0;
-              if (prevData && prevData.length === data.length) {
-                diffMot =
-                  Math.abs(data[idx] - prevData[idx]) +
-                  Math.abs(data[idx + 1] - prevData[idx + 1]) +
-                  Math.abs(data[idx + 2] - prevData[idx + 2]);
-              }
-
-              const hasMot = diffMot > motThresh;
-              if (hasMot) movingPixelsCount++;
-
-              const activeNow = diffBg > bgThresh || hasMot ? 1.0 : 0.0;
-              // Decaying persistence keeps stationary or slow-moving limbs visible right after a move
-              heatmap[p] = activeNow > 0 ? 1.0 : heatmap[p] * 0.84;
-            }
-
-            // When user hasn't manually scanned an empty wall, slowly adapt static non-moving pixels
-            // so vacated "ghost spots" fade quickly instead of anchoring the bottom foot dot
-            if (bgData && !manualWallScanRef.current) {
-              const rate = !st.isRunning && st.countdownState === 'idle' && movingPixelsCount < totalPixels * 0.02 ? 0.08 : 0.03;
-              const keep = 1 - rate;
-              for (let p = 0; p < totalPixels; p++) {
-                if (heatmap[p] < 0.85) {
-                  const i = p * 4;
-                  bgData[i] = Math.round(bgData[i] * keep + data[i] * rate);
-                  bgData[i + 1] = Math.round(bgData[i + 1] * keep + data[i + 1] * rate);
-                  bgData[i + 2] = Math.round(bgData[i + 2] * keep + data[i + 2] * rate);
-                }
-              }
-            }
-
-            // Step B: Row-level aggregation allowing distant 1px-wide feet if vertically supported
-            const rawRowCounts = new Int32Array(H);
-            const rawRowSumX = new Float32Array(H);
-            const prevBodyX = trackedPoseRef.current.active ? (trackedPoseRef.current.body.x / 100) * W : W * 0.5;
-            const restrictCorridor = trackedPoseRef.current.active;
-
-            for (let y = 1; y < H - 1; y++) {
-              let count = 0;
-              let sx = 0;
-              for (let x = 2; x < W - 2; x++) {
-                if (restrictCorridor && Math.abs(x - prevBodyX) > W * 0.44) continue;
-                if (heatmap[y * W + x] > 0.32) {
-                  count++;
-                  sx += x;
-                }
-              }
-              rawRowCounts[y] = count;
-              rawRowSumX[y] = sx;
-            }
-
-            const rowCounts = new Int32Array(H);
-            const rowSumX = new Float32Array(H);
-            for (let y = 1; y < H - 1; y++) {
-              const c = rawRowCounts[y];
-              if (c >= 2 || (c === 1 && (rawRowCounts[y - 1] >= 1 || rawRowCounts[y + 1] >= 1))) {
-                rowCounts[y] = c;
-                rowSumX[y] = rawRowSumX[y];
-              }
-            }
-
-            // Find largest vertically contiguous climber cluster
-            let totalValidCount = 0;
-            let bestClusterRows: number[] = [];
-            let curCluster: number[] = [];
-            let gap = 0;
-
-            for (let y = 1; y < H - 1; y++) {
-              if (rowCounts[y] >= 1) {
-                curCluster.push(y);
-                gap = 0;
-              } else if (curCluster.length > 0) {
-                gap++;
-                if (gap > Math.round(H * 0.14)) {
-                  if (curCluster.length > bestClusterRows.length) {
-                    bestClusterRows = curCluster;
-                  }
-                  curCluster = [];
-                  gap = 0;
-                }
-              }
-            }
-            if (curCluster.length > bestClusterRows.length) {
-              bestClusterRows = curCluster;
-            }
-
-            for (let i = 0; i < bestClusterRows.length; i++) {
-              totalValidCount += rowCounts[bestClusterRows[i]];
-            }
-
-            if (bestClusterRows.length >= 3 && totalValidCount >= 6) {
-              const bandRows = Math.max(1, Math.ceil(bestClusterRows.length * 0.14));
-
-              let handSumX = 0;
-              let handSumY = 0;
-              let handWeight = 0;
-              for (let i = 0; i < bandRows; i++) {
-                const ry = bestClusterRows[i];
-                const w = rowCounts[ry];
-                handSumX += rowSumX[ry];
-                handSumY += ry * w;
-                handWeight += w;
-              }
-
-              let footSumX = 0;
-              let footSumY = 0;
-              let footWeight = 0;
-              for (let i = Math.max(0, bestClusterRows.length - bandRows); i < bestClusterRows.length; i++) {
-                const ry = bestClusterRows[i];
-                const w = rowCounts[ry];
-                footSumX += rowSumX[ry];
-                footSumY += ry * w;
-                footWeight += w;
-              }
-
-              let bodySumX = 0;
-              let bodySumY = 0;
-              let bodyWeight = 0;
-              for (let i = 0; i < bestClusterRows.length; i++) {
-                const ry = bestClusterRows[i];
-                const w = rowCounts[ry];
-                bodySumX += rowSumX[ry];
-                bodySumY += ry * w;
-                bodyWeight += w;
-              }
-
-              const rawHandsX = (handSumX / handWeight / W) * 100;
-              const rawHandsY = (handSumY / handWeight / H) * 100;
-              const rawBodyX = (bodySumX / bodyWeight / W) * 100;
-              const rawBodyY = (bodySumY / bodyWeight / H) * 100;
-              const rawFootX = (footSumX / footWeight / W) * 100;
-              const rawFootY = (footSumY / footWeight / H) * 100;
-
-              const prev = trackedPoseRef.current;
-              const alpha = prev.active ? 0.55 : 1.0;
-              const lerp = (a: number, b: number) => a + (b - a) * alpha;
-
-              const nextHandsY = Math.max(1, Math.min(98, prev.active ? lerp(prev.hands.y, rawHandsY) : rawHandsY));
-              const nextBodyY = Math.max(nextHandsY + 1, Math.min(99, prev.active ? lerp(prev.body.y, rawBodyY) : rawBodyY));
-              const nextFootY = Math.max(nextBodyY + 1, Math.min(99, prev.active ? lerp(prev.foot.y, rawFootY) : rawFootY));
-
-              const nextPose: TrackedPose = {
-                active: true,
-                hands: {
-                  x: Math.max(3, Math.min(97, prev.active ? lerp(prev.hands.x, rawHandsX) : rawHandsX)),
-                  y: nextHandsY,
-                },
-                body: {
-                  x: Math.max(3, Math.min(97, prev.active ? lerp(prev.body.x, rawBodyX) : rawBodyX)),
-                  y: nextBodyY,
-                },
-                foot: {
-                  x: Math.max(3, Math.min(97, prev.active ? lerp(prev.foot.x, rawFootX) : rawFootX)),
-                  y: nextFootY,
-                },
-                confidence: Math.min(100, Math.round((totalValidCount / 140) * 100)),
-              };
-
+      // Primary Engine: Google MediaPipe PoseLandmarker (33 anatomical landmarks)
+      const landmarker = poseLandmarkerRef.current;
+      if (landmarker) {
+        try {
+          const monotonicTs = Math.max(lastMediaPipeTsRef.current + 1, Math.round(nowMs));
+          lastMediaPipeTsRef.current = monotonicTs;
+          const result = landmarker.detectForVideo(video, monotonicTs);
+          if (result.landmarks && result.landmarks.length > 0) {
+            const pose = extractFromLandmarks(result.landmarks[0]);
+            if (pose) {
               const prevFootY = prevFootYRef.current;
-              trackedPoseRef.current = nextPose;
-              prevFootYRef.current = nextPose.foot.y;
-              prevHandsYRef.current = nextPose.hands.y;
+              trackedPoseRef.current = pose;
+              prevFootYRef.current = pose.foot.y;
+              prevHandsYRef.current = pose.hands.y;
 
-              if (nowMs - lastMotionUpdateRef.current > 35) {
+              if (nowMs - lastMotionUpdateRef.current > 30) {
                 lastMotionUpdateRef.current = nowMs;
-                setTrackedPose(nextPose);
+                setTrackedPose(pose);
               }
 
-              const liveElapsedMs = startTimeRef.current > 0 ? nowMs - startTimeRef.current : 0;
-
-              // LINE 1 TRIGGER (BOTTOM): Green Foot dot crosses upward past startZoneY -> START CHRONO
-              if (!st.isRunning && st.countdownState === 'armed') {
-                if (nextPose.foot.y >= st.startZoneY - 2.0) {
-                  footArmedBelowLineRef.current = true;
-                }
-                const crossedUpward =
-                  (prevFootY !== null && prevFootY >= st.startZoneY - 1.5 && nextPose.foot.y < st.startZoneY - 0.5) ||
-                  (footArmedBelowLineRef.current && nextPose.foot.y < st.startZoneY - 1.0);
-
-                if (crossedUpward) {
-                  footArmedBelowLineRef.current = false;
-                  setLastLineTrigger('start');
-                  setTimeout(() => setLastLineTrigger(null), 1200);
-                  playIFSCStartTone();
-                  st.startTimerNow(0.125);
-                }
-              }
-
-              // LINE 2 TRIGGER (MIDDLE): Red Hands dot crosses upward past midZoneY -> RECORD SPLIT
-              if (st.isRunning && liveElapsedMs > 250 && !midLineTriggeredRef.current) {
-                if (nextPose.hands.y <= st.midZoneY + 0.5) {
-                  midLineTriggeredRef.current = true;
-                  const splitSec = parseFloat((liveElapsedMs / 1000).toFixed(2));
-                  midSplitTimeRef.current = splitSec;
-                  split1TimeRef.current = splitSec;
-                  setMidSplitTime(splitSec);
-                  setSplit1Time(splitSec);
-                  playSplitChime();
-                  setLastLineTrigger('mid');
-                  setTimeout(() => setLastLineTrigger(null), 1200);
-                }
-              }
-
-              // LINE 3 TRIGGER (TOP): Red Hands dot crosses/exceeds finishZoneY -> STOP CHRONO & SAVE
-              if (st.isRunning && liveElapsedMs > 900) {
-                if (nextPose.hands.y <= st.finishZoneY + 0.5) {
-                  setLastLineTrigger('finish');
-                  setTimeout(() => setLastLineTrigger(null), 1200);
-                  st.stopTimer();
-                }
-              }
-            } else {
-              if (trackedPoseRef.current.active && nowMs - lastMotionUpdateRef.current > 220) {
-                lastMotionUpdateRef.current = nowMs;
-                trackedPoseRef.current = EMPTY_POSE;
-                prevFootYRef.current = null;
-                prevHandsYRef.current = null;
-                setTrackedPose(EMPTY_POSE);
-              }
+              triggerLineEvents(pose, prevFootY, nowMs);
+              return;
             }
+          }
+        } catch {
+          // Fall through cleanly to CV fallback for this frame
+        }
+      }
 
-            prevImageDataRef.current = new Uint8ClampedArray(data);
-          } catch {
-            // ignore canvas errors
+      // Secondary Fallback: Static-wall silhouette + motion heatmap (when MediaPipe is loading/offline or climber too far)
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return;
+
+      const W = 120;
+      const H = 180;
+      canvas.width = W;
+      canvas.height = H;
+      ctx.drawImage(video, 0, 0, W, H);
+
+      try {
+        const frame = ctx.getImageData(0, 0, W, H);
+        const data = frame.data;
+        const totalPixels = W * H;
+
+        const cameraSettled = nowMs - cameraStartTsRef.current > 500;
+        if ((!bgFrameRef.current || bgFrameRef.current.length !== data.length) && cameraSettled) {
+          bgFrameRef.current = new Uint8ClampedArray(data);
+          motionHeatmapRef.current = new Float32Array(totalPixels);
+          setWallBgReady(true);
+        }
+
+        if (!motionHeatmapRef.current || motionHeatmapRef.current.length !== totalPixels) {
+          motionHeatmapRef.current = new Float32Array(totalPixels);
+        }
+
+        const bgData = bgFrameRef.current;
+        const prevData = prevImageDataRef.current;
+        const heatmap = motionHeatmapRef.current;
+
+        const bgThresh = st.sensitivityPreset === 'high' ? 32 : st.sensitivityPreset === 'low' ? 58 : 44;
+        const motThresh = st.sensitivityPreset === 'high' ? 22 : st.sensitivityPreset === 'low' ? 44 : 32;
+
+        let movingPixelsCount = 0;
+
+        for (let p = 0; p < totalPixels; p++) {
+          const idx = p * 4;
+          let diffBg = 0;
+          if (bgData && bgData.length === data.length) {
+            diffBg =
+              Math.abs(data[idx] - bgData[idx]) +
+              Math.abs(data[idx + 1] - bgData[idx + 1]) +
+              Math.abs(data[idx + 2] - bgData[idx + 2]);
+          }
+
+          let diffMot = 0;
+          if (prevData && prevData.length === data.length) {
+            diffMot =
+              Math.abs(data[idx] - prevData[idx]) +
+              Math.abs(data[idx + 1] - prevData[idx + 1]) +
+              Math.abs(data[idx + 2] - prevData[idx + 2]);
+          }
+
+          const hasMot = diffMot > motThresh;
+          if (hasMot) movingPixelsCount++;
+
+          const activeNow = diffBg > bgThresh || hasMot ? 1.0 : 0.0;
+          heatmap[p] = activeNow > 0 ? 1.0 : heatmap[p] * 0.84;
+        }
+
+        // Only slowly adapt idle background when NOT armed or running so waiting climber is never erased
+        if (bgData && !manualWallScanRef.current && !st.isRunning && st.countdownState === 'idle') {
+          const rate = movingPixelsCount < totalPixels * 0.02 ? 0.06 : 0.015;
+          const keep = 1 - rate;
+          for (let p = 0; p < totalPixels; p++) {
+            if (heatmap[p] < 0.85) {
+              const i = p * 4;
+              bgData[i] = Math.round(bgData[i] * keep + data[i] * rate);
+              bgData[i + 1] = Math.round(bgData[i + 1] * keep + data[i + 1] * rate);
+              bgData[i + 2] = Math.round(bgData[i + 2] * keep + data[i + 2] * rate);
+            }
           }
         }
+
+        const rawRowCounts = new Int32Array(H);
+        const rawRowSumX = new Float32Array(H);
+        const prevBodyX = trackedPoseRef.current.active ? (trackedPoseRef.current.body.x / 100) * W : W * 0.5;
+        const restrictCorridor = trackedPoseRef.current.active;
+
+        for (let y = 1; y < H - 1; y++) {
+          let count = 0;
+          let sx = 0;
+          for (let x = 2; x < W - 2; x++) {
+            if (restrictCorridor && Math.abs(x - prevBodyX) > W * 0.44) continue;
+            if (heatmap[y * W + x] > 0.32) {
+              count++;
+              sx += x;
+            }
+          }
+          rawRowCounts[y] = count;
+          rawRowSumX[y] = sx;
+        }
+
+        const rowCounts = new Int32Array(H);
+        const rowSumX = new Float32Array(H);
+        for (let y = 1; y < H - 1; y++) {
+          const c = rawRowCounts[y];
+          if (c >= 2 || (c === 1 && (rawRowCounts[y - 1] >= 1 || rawRowCounts[y + 1] >= 1))) {
+            rowCounts[y] = c;
+            rowSumX[y] = rawRowSumX[y];
+          }
+        }
+
+        let totalValidCount = 0;
+        let bestClusterRows: number[] = [];
+        let curCluster: number[] = [];
+        let gap = 0;
+
+        for (let y = 1; y < H - 1; y++) {
+          if (rowCounts[y] >= 1) {
+            curCluster.push(y);
+            gap = 0;
+          } else if (curCluster.length > 0) {
+            gap++;
+            if (gap > Math.round(H * 0.14)) {
+              if (curCluster.length > bestClusterRows.length) {
+                bestClusterRows = curCluster;
+              }
+              curCluster = [];
+              gap = 0;
+            }
+          }
+        }
+        if (curCluster.length > bestClusterRows.length) {
+          bestClusterRows = curCluster;
+        }
+
+        for (let i = 0; i < bestClusterRows.length; i++) {
+          totalValidCount += rowCounts[bestClusterRows[i]];
+        }
+
+        if (bestClusterRows.length >= 3 && totalValidCount >= 6) {
+          const bandRows = Math.max(1, Math.ceil(bestClusterRows.length * 0.14));
+
+          let handSumX = 0;
+          let handSumY = 0;
+          let handWeight = 0;
+          for (let i = 0; i < bandRows; i++) {
+            const ry = bestClusterRows[i];
+            const w = rowCounts[ry];
+            handSumX += rowSumX[ry];
+            handSumY += ry * w;
+            handWeight += w;
+          }
+
+          let footSumX = 0;
+          let footSumY = 0;
+          let footWeight = 0;
+          for (let i = Math.max(0, bestClusterRows.length - bandRows); i < bestClusterRows.length; i++) {
+            const ry = bestClusterRows[i];
+            const w = rowCounts[ry];
+            footSumX += rowSumX[ry];
+            footSumY += ry * w;
+            footWeight += w;
+          }
+
+          let bodySumX = 0;
+          let bodySumY = 0;
+          let bodyWeight = 0;
+          for (let i = 0; i < bestClusterRows.length; i++) {
+            const ry = bestClusterRows[i];
+            const w = rowCounts[ry];
+            bodySumX += rowSumX[ry];
+            bodySumY += ry * w;
+            bodyWeight += w;
+          }
+
+          const rawHandsX = (handSumX / handWeight / W) * 100;
+          const rawHandsY = (handSumY / handWeight / H) * 100;
+          const rawBodyX = (bodySumX / bodyWeight / W) * 100;
+          const rawBodyY = (bodySumY / bodyWeight / H) * 100;
+          const rawFootX = (footSumX / footWeight / W) * 100;
+          const rawFootY = (footSumY / footWeight / H) * 100;
+
+          const prev = trackedPoseRef.current;
+          const alpha = prev.active ? 0.55 : 1.0;
+          const lerp = (a: number, b: number) => a + (b - a) * alpha;
+
+          const nextHandsY = Math.max(1, Math.min(98, prev.active ? lerp(prev.hands.y, rawHandsY) : rawHandsY));
+          const nextBodyY = Math.max(nextHandsY + 1, Math.min(99, prev.active ? lerp(prev.body.y, rawBodyY) : rawBodyY));
+          const nextFootY = Math.max(nextBodyY + 1, Math.min(99, prev.active ? lerp(prev.foot.y, rawFootY) : rawFootY));
+
+          const nextPose: TrackedPose = {
+            active: true,
+            hands: {
+              x: Math.max(3, Math.min(97, prev.active ? lerp(prev.hands.x, rawHandsX) : rawHandsX)),
+              y: nextHandsY,
+            },
+            body: {
+              x: Math.max(3, Math.min(97, prev.active ? lerp(prev.body.x, rawBodyX) : rawBodyX)),
+              y: nextBodyY,
+            },
+            foot: {
+              x: Math.max(3, Math.min(97, prev.active ? lerp(prev.foot.x, rawFootX) : rawFootX)),
+              y: nextFootY,
+            },
+            confidence: Math.min(100, Math.round((totalValidCount / 140) * 100)),
+            source: 'fallback',
+            skeleton: undefined,
+          };
+
+          const prevFootY = prevFootYRef.current;
+          trackedPoseRef.current = nextPose;
+          prevFootYRef.current = nextPose.foot.y;
+          prevHandsYRef.current = nextPose.hands.y;
+
+          if (nowMs - lastMotionUpdateRef.current > 35) {
+            lastMotionUpdateRef.current = nowMs;
+            setTrackedPose(nextPose);
+          }
+
+          triggerLineEvents(nextPose, prevFootY, nowMs);
+        } else {
+          if (trackedPoseRef.current.active && nowMs - lastMotionUpdateRef.current > 240) {
+            lastMotionUpdateRef.current = nowMs;
+            trackedPoseRef.current = EMPTY_POSE;
+            prevFootYRef.current = null;
+            prevHandsYRef.current = null;
+            setTrackedPose(EMPTY_POSE);
+          }
+        }
+
+        prevImageDataRef.current = new Uint8ClampedArray(data);
+      } catch {
+        // ignore canvas errors
       }
     };
 
@@ -1989,6 +2253,14 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
       if (mediaStreamRef.current) mediaStreamRef.current.getTracks().forEach((t) => t.stop());
       if (micStreamRef.current) micStreamRef.current.getTracks().forEach((t) => t.stop());
       if (audioContextRef.current) audioContextRef.current.close().catch(() => {});
+      if (poseLandmarkerRef.current) {
+        try {
+          poseLandmarkerRef.current.close();
+        } catch {
+          // ignore
+        }
+        poseLandmarkerRef.current = null;
+      }
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
         try {
           mediaRecorderRef.current.stop();
@@ -2805,138 +3077,99 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
               : 'space-y-2'
           }
         >
-          {/* Status Bar OUTSIDE the video frame so image is 100% unobstructed */}
-          <div
-            className={`flex flex-wrap items-center justify-between gap-2 bg-slate-900 border-slate-800 text-xs ${
-              isCameraExpanded ? 'px-3 py-1.5 border-b shrink-0' : 'p-2.5 rounded-2xl border'
-            }`}
-          >
-            <div className="flex items-center gap-2">
-              {isRecording ? (
-                <div className="px-2.5 py-1 rounded-full bg-red-600 text-white font-mono font-black text-xs uppercase flex items-center gap-1.5 shadow-sm animate-pulse">
-                  <span className="w-2 h-2 rounded-full bg-white animate-ping" />
-                  <span>REC {(elapsedMs / 1000).toFixed(1)}s</span>
-                </div>
-              ) : (
-                <div className="px-2.5 py-1 rounded-full bg-slate-800 text-emerald-400 font-mono text-[11px] font-bold border border-emerald-500/30 flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                  <span>HLEDÁČEK ({facingMode === 'environment' ? 'Zadní' : 'Přední'})</span>
-                </div>
-              )}
+          {/* Status Bar OUTSIDE the video frame (removed cleanly when expanded fullscreen) */}
+          {!isCameraExpanded && (
+            <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-900 border-slate-800 text-xs p-2.5 rounded-2xl border">
+              <div className="flex items-center gap-2">
+                {isRecording ? (
+                  <div className="px-2.5 py-1 rounded-full bg-red-600 text-white font-mono font-black text-xs uppercase flex items-center gap-1.5 shadow-sm animate-pulse">
+                    <span className="w-2 h-2 rounded-full bg-white animate-ping" />
+                    <span>REC {(elapsedMs / 1000).toFixed(1)}s</span>
+                  </div>
+                ) : (
+                  <div className="px-2.5 py-1 rounded-full bg-slate-800 text-emerald-400 font-mono text-[11px] font-bold border border-emerald-500/30 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                    <span>HLEDÁČEK ({facingMode === 'environment' ? 'Zadní' : 'Přední'})</span>
+                  </div>
+                )}
 
-              {isFalseStart && (
-                <div className="px-2.5 py-1 bg-red-600 text-white font-black text-xs uppercase rounded-full shadow-sm animate-bounce">
-                  ULILÝ START!
-                </div>
-              )}
+                {isAiCameraMode && (
+                  <span
+                    className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border ${
+                      poseEngineState === 'mediapipe'
+                        ? 'bg-emerald-950/70 border-emerald-500/40 text-emerald-300'
+                        : poseEngineState === 'loading'
+                        ? 'bg-amber-950/70 border-amber-500/40 text-amber-300'
+                        : 'bg-slate-800 border-slate-700 text-slate-300'
+                    }`}
+                  >
+                    {poseEngineState === 'mediapipe'
+                      ? '🧠 AI Kostra'
+                      : poseEngineState === 'loading'
+                      ? '⏳ Načítám AI...'
+                      : 'Záložní detekce'}
+                  </span>
+                )}
 
-              <span className="text-slate-400 text-[11px] font-medium hidden sm:inline">
-                {categoryName} ({routeDef.heightMeters}m)
-              </span>
+                {isFalseStart && (
+                  <div className="px-2.5 py-1 bg-red-600 text-white font-black text-xs uppercase rounded-full shadow-sm animate-bounce">
+                    ULILÝ START!
+                  </div>
+                )}
+
+                <span className="text-slate-400 text-[11px] font-medium hidden sm:inline">
+                  {categoryName} ({routeDef.heightMeters}m)
+                </span>
+              </div>
+
+              {/* Real-time AI Kamera Limb Coordinates */}
+              <div className="flex items-center gap-1.5 text-[11px] font-mono">
+                {isAiCameraMode && (
+                  <>
+                    <div
+                      className={`px-2 py-0.5 rounded-lg border flex items-center gap-1 ${
+                        trackedPose.active
+                          ? 'bg-emerald-950/60 border-emerald-500/50 text-emerald-300'
+                          : 'bg-slate-950 border-slate-800 text-slate-500'
+                      }`}
+                      title="Pozice nohy (zelená tečka)"
+                    >
+                      <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                      <span>{trackedPose.active ? `${Math.round(trackedPose.foot.y)}%` : '—'}</span>
+                    </div>
+                    <div
+                      className={`px-2 py-0.5 rounded-lg border flex items-center gap-1 ${
+                        trackedPose.active
+                          ? 'bg-blue-950/60 border-blue-500/50 text-blue-300'
+                          : 'bg-slate-950 border-slate-800 text-slate-500'
+                      }`}
+                      title="Pozice těla (modrá tečka)"
+                    >
+                      <span className="w-2 h-2 rounded-full bg-blue-400" />
+                      <span>{trackedPose.active ? `${Math.round(trackedPose.body.y)}%` : '—'}</span>
+                    </div>
+                    <div
+                      className={`px-2 py-0.5 rounded-lg border flex items-center gap-1 ${
+                        trackedPose.active
+                          ? 'bg-red-950/60 border-red-500/50 text-red-300'
+                          : 'bg-slate-950 border-slate-800 text-slate-500'
+                      }`}
+                      title="Pozice rukou (červená tečka)"
+                    >
+                      <span className="w-2 h-2 rounded-full bg-red-400" />
+                      <span>{trackedPose.active ? `${Math.round(trackedPose.hands.y)}%` : '—'}</span>
+                    </div>
+                  </>
+                )}
+
+                {!isRunning && elapsedMs === 0 && (
+                  <div className="px-2.5 py-0.5 rounded-lg bg-black text-white font-mono font-bold text-xs border border-white/20">
+                    00.000s
+                  </div>
+                )}
+              </div>
             </div>
-
-            {/* Real-time AI Kamera Limb Coordinates & Quick Expanded Actions */}
-            <div className="flex items-center gap-1.5 text-[11px] font-mono">
-              {isAiCameraMode && (
-                <>
-                  <div
-                    className={`px-2 py-0.5 rounded-lg border flex items-center gap-1 ${
-                      trackedPose.active
-                        ? 'bg-emerald-950/60 border-emerald-500/50 text-emerald-300'
-                        : 'bg-slate-950 border-slate-800 text-slate-500'
-                    }`}
-                    title="Pozice nohy (zelená tečka)"
-                  >
-                    <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                    <span>{trackedPose.active ? `${Math.round(trackedPose.foot.y)}%` : '—'}</span>
-                  </div>
-                  <div
-                    className={`px-2 py-0.5 rounded-lg border flex items-center gap-1 ${
-                      trackedPose.active
-                        ? 'bg-blue-950/60 border-blue-500/50 text-blue-300'
-                        : 'bg-slate-950 border-slate-800 text-slate-500'
-                    }`}
-                    title="Pozice těla (modrá tečka)"
-                  >
-                    <span className="w-2 h-2 rounded-full bg-blue-400" />
-                    <span>{trackedPose.active ? `${Math.round(trackedPose.body.y)}%` : '—'}</span>
-                  </div>
-                  <div
-                    className={`px-2 py-0.5 rounded-lg border flex items-center gap-1 ${
-                      trackedPose.active
-                        ? 'bg-red-950/60 border-red-500/50 text-red-300'
-                        : 'bg-slate-950 border-slate-800 text-slate-500'
-                    }`}
-                    title="Pozice rukou (červená tečka)"
-                  >
-                    <span className="w-2 h-2 rounded-full bg-red-400" />
-                    <span>{trackedPose.active ? `${Math.round(trackedPose.hands.y)}%` : '—'}</span>
-                  </div>
-                </>
-              )}
-
-              {isCameraExpanded && (
-                <div className="flex items-center gap-1 font-sans">
-                  {isAiCameraMode && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const next = !isCalibrating;
-                          setIsCalibrating(next);
-                          if (next) setShowGuides(true);
-                        }}
-                        className={`px-2 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1 border ${
-                          isCalibrating
-                            ? 'bg-red-600 text-white border-red-500'
-                            : 'bg-slate-800 text-slate-200 border-slate-700'
-                        }`}
-                        title="Kalibrace linií"
-                      >
-                        <Sliders className="w-3 h-3" />
-                        <span className="hidden xs:inline">Linie</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={captureWallBackground}
-                        className={`px-2 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1 border ${
-                          wallBgReady
-                            ? 'bg-blue-600/80 text-white border-blue-400'
-                            : 'bg-slate-800 text-slate-200 border-slate-700'
-                        }`}
-                        title="Naskenovat prázdnou stěnu"
-                      >
-                        <Crosshair className="w-3 h-3" />
-                      </button>
-                    </>
-                  )}
-                  <button
-                    type="button"
-                    onClick={switchCameraFacing}
-                    className="p-1.5 rounded-lg bg-slate-800 text-slate-200 border border-slate-700 hover:bg-slate-700"
-                    title="Otočit kameru"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIsCameraExpanded(false)}
-                    className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 flex items-center gap-1 text-[11px] font-bold"
-                    title="Zmenšit kameru"
-                  >
-                    <Minimize2 className="w-3.5 h-3.5" />
-                    <span className="hidden xs:inline">Zmenšit</span>
-                  </button>
-                </div>
-              )}
-
-              {!isRunning && elapsedMs === 0 && !isCameraExpanded && (
-                <div className="px-2.5 py-0.5 rounded-lg bg-black text-white font-mono font-bold text-xs border border-white/20">
-                  00.000s
-                </div>
-              )}
-            </div>
-          </div>
+          )}
 
           {/* ACTIVE CAMERA HUD VIEWPORT – Supports Fullscreen between TopBar & BottomTabBar + Touch Gestures */}
           <div
@@ -3026,8 +3259,8 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
               </div>
             )}
 
-            {/* Quick Tap Action Floating Badge at Top (hidden during calibration so top finish line is unobstructed) */}
-            {!(isAiCameraMode && isCalibrating) && (
+            {/* Quick Tap Action Floating Badge at Top (hidden during fullscreen expanded mode and calibration) */}
+            {!isCameraExpanded && !(isAiCameraMode && isCalibrating) && (
               <div className="absolute top-3 left-3 right-3 flex items-center justify-center pointer-events-none z-20">
                 <div className="px-3 py-1 rounded-full bg-slate-950/80 text-white/90 text-[11px] font-bold border border-white/20 shadow-md backdrop-blur-sm flex items-center gap-1.5">
                   <Play className="w-3 h-3 fill-current text-red-500" />
@@ -3230,26 +3463,43 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                 {/* Live Continuous Climber Pose Skeleton & Colored Tracking Dots */}
                 {trackedPose.active && (
                   <>
-                    {/* Connecting body-axis line */}
+                    {/* Anatomical MediaPipe skeleton or body-axis fallback line */}
                     <svg className="absolute inset-0 w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none">
-                      <line
-                        x1={trackedPose.hands.x}
-                        y1={trackedPose.hands.y}
-                        x2={trackedPose.body.x}
-                        y2={trackedPose.body.y}
-                        stroke="rgba(255,255,255,0.55)"
-                        strokeWidth="0.6"
-                        strokeDasharray="1.2 1"
-                      />
-                      <line
-                        x1={trackedPose.body.x}
-                        y1={trackedPose.body.y}
-                        x2={trackedPose.foot.x}
-                        y2={trackedPose.foot.y}
-                        stroke="rgba(255,255,255,0.55)"
-                        strokeWidth="0.6"
-                        strokeDasharray="1.2 1"
-                      />
+                      {trackedPose.skeleton && trackedPose.skeleton.length > 0 ? (
+                        trackedPose.skeleton.map((seg, i) => (
+                          <line
+                            key={i}
+                            x1={seg.from.x}
+                            y1={seg.from.y}
+                            x2={seg.to.x}
+                            y2={seg.to.y}
+                            stroke="rgba(255,255,255,0.75)"
+                            strokeWidth="0.7"
+                            strokeLinecap="round"
+                          />
+                        ))
+                      ) : (
+                        <>
+                          <line
+                            x1={trackedPose.hands.x}
+                            y1={trackedPose.hands.y}
+                            x2={trackedPose.body.x}
+                            y2={trackedPose.body.y}
+                            stroke="rgba(255,255,255,0.55)"
+                            strokeWidth="0.6"
+                            strokeDasharray="1.2 1"
+                          />
+                          <line
+                            x1={trackedPose.body.x}
+                            y1={trackedPose.body.y}
+                            x2={trackedPose.foot.x}
+                            y2={trackedPose.foot.y}
+                            stroke="rgba(255,255,255,0.55)"
+                            strokeWidth="0.6"
+                            strokeDasharray="1.2 1"
+                          />
+                        </>
+                      )}
                     </svg>
 
                     {/* 🔴 Red Dot = Hands (Ruce) */}
@@ -3392,15 +3642,8 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
             )}
           </div>
 
-          {/* Touch Gesture Legend Strip (Inside Expanded Mode OR Helper Banner Outside) */}
-          {isCameraExpanded ? (
-            <div className="px-3 py-1.5 bg-slate-950 border-t border-slate-800 text-[10px] sm:text-[11px] text-slate-300 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 shrink-0 font-bold">
-              <span className="text-emerald-400">← Přejetím doleva: Uložit</span>
-              <span className="text-red-400">2× → Dvěma prsty doprava: Smazat</span>
-              <span className="text-amber-400">↑ Nahoru: Restart</span>
-              <span className="text-slate-300">↓ Dolů: Vyskočit z režimu</span>
-            </div>
-          ) : (
+          {/* Helper Banner OUTSIDE the video frame (no hint strip in fullscreen expanded mode) */}
+          {!isCameraExpanded && (
             <div className="flex flex-col gap-1.5 p-3 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-300">
               <div className="flex flex-col sm:flex-row items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
@@ -3414,7 +3657,11 @@ export const SmartTimer: React.FC<SmartTimerProps> = ({
                 <div className="text-[11px] text-slate-500 dark:text-slate-400 shrink-0">
                   {isAiCameraMode ? (
                     <span className="text-emerald-600 dark:text-emerald-400 font-bold">
-                      ● AI sledování (Noha / Tělo / Ruce)
+                      {poseEngineState === 'mediapipe'
+                        ? '● AI Kostra (MediaPipe: Noha / Tělo / Ruka)'
+                        : poseEngineState === 'loading'
+                        ? '● Načítám AI rozpoznávání postavy...'
+                        : '● Záložní detekce pohybu'}
                     </span>
                   ) : (
                     <span>Pouze videozáznam bez AI detekce</span>
